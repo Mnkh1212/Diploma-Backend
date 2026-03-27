@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"fintrack-backend/internal/models"
 	"github.com/gin-gonic/gin"
@@ -47,6 +48,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, account)
+	LogActivity(h.DB, userID, "create_account", "account", account.ID, "", "success", c.ClientIP())
 }
 
 func (h *AccountHandler) List(c *gin.Context) {
@@ -104,6 +106,8 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 
 	h.DB.Delete(&account)
 	c.JSON(http.StatusOK, gin.H{"message": "Account deleted"})
+	idUint, _ := strconv.ParseUint(id, 10, 32)
+	LogActivity(h.DB, userID, "delete_account", "account", uint(idUint), "", "success", c.ClientIP())
 }
 
 func (h *AccountHandler) GetCategories(c *gin.Context) {

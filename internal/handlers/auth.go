@@ -70,6 +70,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, models.AuthResponse{Token: token, User: user})
+	LogActivity(h.DB, user.ID, "register", "user", user.ID, "", "success", c.ClientIP())
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -97,6 +98,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, models.AuthResponse{Token: token, User: user})
+	LogActivity(h.DB, user.ID, "login", "user", user.ID, "", "success", c.ClientIP())
 }
 
 func (h *AuthHandler) GetProfile(c *gin.Context) {

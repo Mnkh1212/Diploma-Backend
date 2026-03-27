@@ -115,6 +115,7 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 		"chat_id":  chat.ID,
 		"message":  aiMsg,
 	})
+	LogActivity(h.DB, userID, "ai_chat_message", "ai_chat", chat.ID, "", "success", c.ClientIP())
 }
 
 func (h *AIChatHandler) DeleteChat(c *gin.Context) {

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -64,6 +65,7 @@ func (h *BudgetHandler) Create(c *gin.Context) {
 
 	h.DB.Preload("Category").First(&budget, budget.ID)
 	c.JSON(http.StatusCreated, budget)
+	LogActivity(h.DB, userID, "create_budget", "budget", budget.ID, fmt.Sprintf(`{"amount":%.2f}`, budget.Amount), "success", c.ClientIP())
 }
 
 func (h *BudgetHandler) List(c *gin.Context) {
@@ -116,6 +118,7 @@ func (h *BudgetHandler) Update(c *gin.Context) {
 
 	h.DB.Preload("Category").First(&budget, budget.ID)
 	c.JSON(http.StatusOK, budget)
+	LogActivity(h.DB, userID, "update_budget", "budget", budget.ID, "", "success", c.ClientIP())
 }
 
 func (h *BudgetHandler) Delete(c *gin.Context) {
@@ -130,4 +133,6 @@ func (h *BudgetHandler) Delete(c *gin.Context) {
 
 	h.DB.Delete(&budget)
 	c.JSON(http.StatusOK, gin.H{"message": "Budget deleted"})
+	idUint, _ := strconv.ParseUint(id, 10, 32)
+	LogActivity(h.DB, userID, "delete_budget", "budget", uint(idUint), "", "success", c.ClientIP())
 }

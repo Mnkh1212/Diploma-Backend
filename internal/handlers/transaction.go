@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -71,6 +72,7 @@ func (h *TransactionHandler) Create(c *gin.Context) {
 
 	h.DB.Preload("Category").Preload("Account").First(&tx, tx.ID)
 	c.JSON(http.StatusCreated, tx)
+	LogActivity(h.DB, userID, "create_transaction", "transaction", tx.ID, fmt.Sprintf(`{"amount":%.2f,"type":"%s"}`, tx.Amount, tx.Type), "success", c.ClientIP())
 }
 
 func (h *TransactionHandler) List(c *gin.Context) {
@@ -146,4 +148,6 @@ func (h *TransactionHandler) Delete(c *gin.Context) {
 
 	h.DB.Delete(&tx)
 	c.JSON(http.StatusOK, gin.H{"message": "Transaction deleted"})
+	idUint, _ := strconv.ParseUint(id, 10, 32)
+	LogActivity(h.DB, userID, "delete_transaction", "transaction", uint(idUint), "", "success", c.ClientIP())
 }

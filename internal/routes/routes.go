@@ -18,6 +18,7 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	aiHandler := handlers.NewAIChatHandler(db)
 	accountHandler := handlers.NewAccountHandler(db)
 	scheduledHandler := handlers.NewScheduledPaymentHandler(db)
+	activityHandler := handlers.NewActivityLogHandler(db)
 
 	// Public routes
 	api := r.Group("/api/v1")
@@ -72,5 +73,9 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		protected.GET("/ai/chats/:id", aiHandler.GetChat)
 		protected.POST("/ai/chat", aiHandler.SendMessage)
 		protected.DELETE("/ai/chats/:id", aiHandler.DeleteChat)
+
+		// Activity Logs
+		protected.GET("/activity-logs", activityHandler.List)
+		protected.GET("/activity-logs/summary", activityHandler.Summary)
 	}
 }

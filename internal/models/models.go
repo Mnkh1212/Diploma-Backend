@@ -99,6 +99,19 @@ type AIMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type ActivityLog struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	UserID    uint      `json:"user_id" gorm:"not null;index"`
+	Action    string    `json:"action" gorm:"not null"`                        // e.g. "create_transaction", "login", "view_dashboard"
+	Entity    string    `json:"entity"`                                        // e.g. "transaction", "budget", "account"
+	EntityID  uint      `json:"entity_id"`                                     // ID of the affected entity
+	Details   string    `json:"details" gorm:"type:text"`                      // JSON string with extra info
+	Status    string    `json:"status" gorm:"not null;default:success"`        // success, failed
+	IPAddress string    `json:"ip_address"`
+	User      User      `json:"-" gorm:"foreignKey:UserID"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Request/Response DTOs
 
 type RegisterRequest struct {
@@ -172,4 +185,9 @@ type PeriodStats struct {
 	Label    string  `json:"label"`
 	Income   float64 `json:"income"`
 	Expenses float64 `json:"expenses"`
+}
+
+type ActivityLogResponse struct {
+	Logs  []ActivityLog `json:"logs"`
+	Total int64         `json:"total"`
 }
