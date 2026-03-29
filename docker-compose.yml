@@ -18,7 +18,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: fintrack-backend
     ports:
@@ -31,6 +31,9 @@ services:
       DB_NAME: fintrack
       JWT_SECRET: fintrack-diploma-secret-key-2024
       PORT: 8080
+      AI_API_KEY: ${AI_API_KEY:-}
+    volumes:
+      - uploads_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,3 +41,4 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:

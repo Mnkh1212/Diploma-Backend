@@ -15,10 +15,11 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	txHandler := handlers.NewTransactionHandler(db)
 	dashHandler := handlers.NewDashboardHandler(db)
 	budgetHandler := handlers.NewBudgetHandler(db)
-	aiHandler := handlers.NewAIChatHandler(db)
+	aiHandler := handlers.NewAIChatHandler(db, cfg)
 	accountHandler := handlers.NewAccountHandler(db)
 	scheduledHandler := handlers.NewScheduledPaymentHandler(db)
 	activityHandler := handlers.NewActivityLogHandler(db)
+	notifHandler := handlers.NewNotificationHandler(db)
 
 	// Public routes
 	api := r.Group("/api/v1")
@@ -34,6 +35,8 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		// Profile
 		protected.GET("/profile", authHandler.GetProfile)
 		protected.PUT("/profile", authHandler.UpdateProfile)
+		protected.PUT("/profile/password", authHandler.ChangePassword)
+		protected.POST("/profile/avatar", authHandler.UploadAvatar)
 
 		// Dashboard
 		protected.GET("/dashboard", dashHandler.GetDashboard)
@@ -77,5 +80,11 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		// Activity Logs
 		protected.GET("/activity-logs", activityHandler.List)
 		protected.GET("/activity-logs/summary", activityHandler.Summary)
+
+		// Notifications
+		protected.POST("/push-token", notifHandler.SavePushToken)
+		protected.GET("/notifications", notifHandler.ListNotifications)
+		protected.PUT("/notifications/:id/read", notifHandler.MarkRead)
+		protected.PUT("/notifications/read-all", notifHandler.MarkAllRead)
 	}
 }

@@ -8,9 +8,11 @@ type User struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	Name      string    `json:"name" gorm:"not null"`
 	Email     string    `json:"email" gorm:"uniqueIndex;not null"`
+	Phone     string    `json:"phone"`
 	Password  string    `json:"-" gorm:"not null"`
 	Avatar    string    `json:"avatar"`
 	Currency  string    `json:"currency" gorm:"default:USD"`
+	PushToken string    `json:"push_token"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -108,6 +110,17 @@ type ActivityLog struct {
 	Details   string    `json:"details" gorm:"type:text"`                      // JSON string with extra info
 	Status    string    `json:"status" gorm:"not null;default:success"`        // success, failed
 	IPAddress string    `json:"ip_address"`
+	User      User      `json:"-" gorm:"foreignKey:UserID"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Notification struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	UserID    uint      `json:"user_id" gorm:"not null;index"`
+	Title     string    `json:"title" gorm:"not null"`
+	Body      string    `json:"body" gorm:"type:text;not null"`
+	Type      string    `json:"type" gorm:"not null"` // insight, warning, tip
+	IsRead    bool      `json:"is_read" gorm:"default:false"`
 	User      User      `json:"-" gorm:"foreignKey:UserID"`
 	CreatedAt time.Time `json:"created_at"`
 }

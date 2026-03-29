@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"fintrack-backend/internal/config"
@@ -124,6 +127,8 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 
 	var input struct {
 		Name     string `json:"name"`
+		Email    string `json:"email"`
+		Phone    string `json:"phone"`
 		Avatar   string `json:"avatar"`
 		Currency string `json:"currency"`
 	}
@@ -135,6 +140,18 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	if input.Name != "" {
 		user.Name = input.Name
 	}
+	if input.Email != "" {
+		// Check if email is taken by another user
+		var existing models.User
+		if err := h.DB.Where("email = ? AND id != ?", input.Email, user.ID).First(&existing).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "Email already in use"})
+			return
+		}
+		user.Email = input.Email
+	}
+	if input.Phone != "" {
+		user.Phone = input.Phone
+	}
 	if input.Avatar != "" {
 		user.Avatar = input.Avatar
 	}
@@ -142,6 +159,72 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 		user.Currency = input.Currency
 	}
 
+	h.DB.Save(&user)
+	c.JSON(http.StatusOK, user)
+}
+
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var user models.User
+	if err := h.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var input struct {
+		OldPassword string `json:"old_password" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.OldPassword)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Хуучин нууц үг буруу байна"})
+		return
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	user.Password = string(hashed)
+	h.DB.Save(&user)
+	c.JSON(http.StatusOK, gin.H{"message": "Нууц үг амжилттай солигдлоо"})
+}
+
+func (h *AuthHandler) UploadAvatar(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var user models.User
+	if err := h.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	file, err := c.FormFile("avatar")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Зураг оруулна уу"})
+		return
+	}
+
+	dir := "./uploads/avatars"
+	os.MkdirAll(dir, 0755)
+
+	ext := filepath.Ext(file.Filename)
+	filename := fmt.Sprintf("avatar_%d_%d%s", userID, time.Now().Unix(), ext)
+	path := filepath.Join(dir, filename)
+
+	if err := c.SaveUploadedFile(file, path); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Зураг хадгалж чадсангүй"})
+		return
+	}
+
+	user.Avatar = "/uploads/avatars/" + filename
 	h.DB.Save(&user)
 	c.JSON(http.StatusOK, user)
 }
