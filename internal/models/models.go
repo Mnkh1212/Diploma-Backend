@@ -10,6 +10,8 @@ type User struct {
 	Email     string    `json:"email" gorm:"uniqueIndex;not null"`
 	Phone     string    `json:"phone"`
 	Password  string    `json:"-" gorm:"not null"`
+	AuthProvider string  `json:"auth_provider" gorm:"default:password"`
+	ProviderUserID string `json:"provider_user_id"`
 	Avatar    string    `json:"avatar"`
 	Currency  string    `json:"currency" gorm:"default:USD"`
 	PushToken string    `json:"push_token"`
@@ -136,6 +138,23 @@ type RegisterRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+}
+
+type SocialAuthRequest struct {
+	Provider          string `json:"provider" binding:"required,oneof=google facebook apple"`
+	IDToken           string `json:"id_token"`
+	AccessToken       string `json:"access_token"`
+	AuthorizationCode string `json:"authorization_code"`
+	Email             string `json:"email"`
+	Name              string `json:"name"`
+}
+
+type SocialProviderStatus struct {
+	Provider   string `json:"provider"`
+	Label      string `json:"label"`
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+	Hint       string `json:"hint"`
 }
 
 type AuthResponse struct {

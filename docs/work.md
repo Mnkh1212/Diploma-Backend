@@ -7,6 +7,35 @@
 
 ---
 
+## 2026-04-03 — Network config төвлөрүүлэлт
+
+### Хийгдсэн ажлууд:
+
+- Frontend дээрх hardcoded API/server IP-үүдийг `frontend/src/config/network.ts` файл руу төвлөрүүлсэн
+- `api.ts`, `HomeScreen.tsx`, `SettingsScreen.tsx`, `ProfileScreen.tsx` нь одоо shared config-оос host-оо уншдаг болсон
+- Avatar URL үүсгэх логикийг `buildAssetUrl()` helper болгож нэгтгэсэн
+- Backend default host/port fallback утгуудыг `backend/internal/config/defaults.go` файлд төвлөрүүлсэн
+- Documentation дээр network/config-ийн төвлөрсөн байршлыг тэмдэглэсэн
+
+## 2026-04-04 — AI key config сайжруулалт
+
+### Хийгдсэн ажлууд:
+
+- Backend AI config нь одоо `AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` гэсэн 3 нэрийн аль нэгээс key уншдаг болсон
+- AI key байхгүй үед AI chat fallback summary биш, ойлгомжтой setup message харуулдаг болгосон
+- `backend/.env.example` нэмээд AI key тохируулах жишээ оруулсан
+
+## 2026-04-04 — Social Auth Scaffold
+
+### Хийгдсэн ажлууд:
+
+- Backend дээр `GET /api/v1/auth/social/providers`, `POST /api/v1/auth/social/login` scaffold endpoint нэмсэн
+- Google, Facebook, Apple provider status-ийг env config-аас уншдаг болгосон
+- Frontend Login/Register дэлгэцүүд social provider status харж enabled/disabled state-тай болсон
+- Social auth-ийн дараагийн шатанд SDK token verify, redirect callback, account linking залгах суурь бэлдсэн
+
+---
+
 ## 2026-03-27 — Төслийн анхны тохиргоо (Day 1)
 
 ### Хийгдсэн ажлууд:

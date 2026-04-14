@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"fintrack-backend/internal/config"
@@ -102,6 +103,54 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, models.AuthResponse{Token: token, User: user})
 	LogActivity(h.DB, user.ID, "login", "user", user.ID, "", "success", c.ClientIP())
+}
+
+func (h *AuthHandler) GetSocialProviders(c *gin.Context) {
+	providers := []models.SocialProviderStatus{
+		{
+			Provider:   "google",
+			Label:      "Google",
+			Enabled:    h.Cfg.GoogleIOSClientID != "" || h.Cfg.GoogleWebClientID != "",
+			Configured: h.Cfg.GoogleIOSClientID != "" || h.Cfg.GoogleWebClientID != "",
+			Hint:       "GOOGLE_IOS_CLIENT_ID эсвэл GOOGLE_WEB_CLIENT_ID шаардлагатай",
+		},
+		{
+			Provider:   "facebook",
+			Label:      "Facebook",
+			Enabled:    h.Cfg.FacebookAppID != "",
+			Configured: h.Cfg.FacebookAppID != "",
+			Hint:       "FACEBOOK_APP_ID шаардлагатай",
+		},
+		{
+			Provider:   "apple",
+			Label:      "Apple",
+			Enabled:    h.Cfg.AppleBundleID != "",
+			Configured: h.Cfg.AppleBundleID != "",
+			Hint:       "APPLE_BUNDLE_ID шаардлагатай",
+		},
+	}
+
+	c.JSON(http.StatusOK, providers)
+}
+
+func (h *AuthHandler) SocialLogin(c *gin.Context) {
+	var req models.SocialAuthRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if !h.isSocialProviderConfigured(provider) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": h.socialProviderSetupHint(provider),
+		})
+		return
+	}
+
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"error": fmt.Sprintf("%s social login backend scaffold бэлэн байна. Одоо provider SDK token verify болон redirect/app id холболтыг үргэлжлүүлэх шаардлагатай.", strings.Title(provider)),
+	})
 }
 
 func (h *AuthHandler) GetProfile(c *gin.Context) {
@@ -238,4 +287,30 @@ func (h *AuthHandler) generateToken(userID uint) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(h.Cfg.JWTSecret))
+}
+
+func (h *AuthHandler) isSocialProviderConfigured(provider string) bool {
+	switch provider {
+	case "google":
+		return h.Cfg.GoogleIOSClientID != "" || h.Cfg.GoogleWebClientID != ""
+	case "facebook":
+		return h.Cfg.FacebookAppID != ""
+	case "apple":
+		return h.Cfg.AppleBundleID != ""
+	default:
+		return false
+	}
+}
+
+func (h *AuthHandler) socialProviderSetupHint(provider string) string {
+	switch provider {
+	case "google":
+		return "Google login ашиглахын тулд backend env дээр GOOGLE_IOS_CLIENT_ID эсвэл GOOGLE_WEB_CLIENT_ID тохируулна уу."
+	case "facebook":
+		return "Facebook login ашиглахын тулд backend env дээр FACEBOOK_APP_ID тохируулна уу."
+	case "apple":
+		return "Apple login ашиглахын тулд backend env дээр APPLE_BUNDLE_ID тохируулна уу."
+	default:
+		return "Social login provider тохиргоо дутуу байна."
+	}
 }

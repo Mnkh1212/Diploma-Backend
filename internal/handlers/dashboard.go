@@ -225,14 +225,24 @@ func (h *DashboardHandler) GetStatistics(c *gin.Context) {
 		}
 	}
 
-	// Current month totals
-	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	// Period-based totals
+	var periodStart time.Time
+	switch period {
+	case "daily":
+		periodStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	case "weekly":
+		periodStart = now.AddDate(0, 0, -7)
+	case "monthly":
+		periodStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	case "yearly":
+		periodStart = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+	}
 	var totalIncome, totalExpenses float64
 	h.DB.Model(&models.Transaction{}).
-		Where("user_id = ? AND type = ? AND date >= ?", userID, "income", startOfMonth).
+		Where("user_id = ? AND type = ? AND date >= ?", userID, "income", periodStart).
 		Select("COALESCE(SUM(amount), 0)").Scan(&totalIncome)
 	h.DB.Model(&models.Transaction{}).
-		Where("user_id = ? AND type = ? AND date >= ?", userID, "expense", startOfMonth).
+		Where("user_id = ? AND type = ? AND date >= ?", userID, "expense", periodStart).
 		Select("COALESCE(SUM(amount), 0)").Scan(&totalExpenses)
 
 	c.JSON(http.StatusOK, models.StatisticsResponse{

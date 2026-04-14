@@ -75,6 +75,8 @@ docker-compose up --build -d
 # PostgreSQL on port 5433 (mapped from 5432)
 ```
 
+AI chat-ийн жинхэнэ model ашиглахын тулд `backend/.env.example`-ийг жишээ болгож `AI_API_KEY`, `GEMINI_API_KEY`, эсвэл `GOOGLE_API_KEY`-ийн аль нэгийг тохируулна.
+
 ### 2. Connect Database (DataGrip)
 
 | Field    | Value       |
@@ -97,6 +99,8 @@ npx expo run:ios --device
 # For development:
 npx expo start --clear --dev-client
 ```
+
+API host-ийг нэг газраас удирдах бол `frontend/src/config/network.ts`-д өөрчилнө.
 
 ### 4. iPhone Setup
 
@@ -204,3 +208,9 @@ npx expo start --clear --dev-client
 | Profile     | Edit name, email, currency |
 | Accounts    | Manage bank accounts |
 | Recurring   | Scheduled payment management |
+
+## Config Note
+
+- Frontend API/server host нь `frontend/src/config/network.ts` дээр төвлөрсөн.
+- Backend default host/port утгууд `backend/internal/config/defaults.go` дээр төвлөрсөн.
+- Social auth scaffold нь `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID`, `FACEBOOK_APP_ID`, `APPLE_BUNDLE_ID` env-үүдийг ашигладаг.

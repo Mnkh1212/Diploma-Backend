@@ -20,12 +20,15 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	scheduledHandler := handlers.NewScheduledPaymentHandler(db)
 	activityHandler := handlers.NewActivityLogHandler(db)
 	notifHandler := handlers.NewNotificationHandler(db)
+	importHandler := handlers.NewImportHandler(db, cfg)
 
 	// Public routes
 	api := r.Group("/api/v1")
 	{
 		api.POST("/auth/register", authHandler.Register)
 		api.POST("/auth/login", authHandler.Login)
+		api.GET("/auth/social/providers", authHandler.GetSocialProviders)
+		api.POST("/auth/social/login", authHandler.SocialLogin)
 	}
 
 	// Protected routes
@@ -86,5 +89,8 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		protected.GET("/notifications", notifHandler.ListNotifications)
 		protected.PUT("/notifications/:id/read", notifHandler.MarkRead)
 		protected.PUT("/notifications/read-all", notifHandler.MarkAllRead)
+
+		// Import
+		protected.POST("/import/statement", importHandler.ImportStatement)
 	}
 }
