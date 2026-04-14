@@ -2,3 +2,4 @@ vendor/
 *.exe
 *.test
 .env
+.gocache/
