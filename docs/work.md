@@ -225,3 +225,27 @@
 - [ ] Custom categories нэмэх
 - [ ] Transaction update endpoint
 - [ ] Charts сайжруулах (react-native-svg)
+
+---
+
+## 2026-04-14: Bank statement import + AI chat improvements (v1.0.2)
+
+### Нэмсэн endpoint-ууд
+- `POST /api/v1/import/statement` — Банкны хуулга upload + Gemini AI анализ
+  - PDF (ledongthuc/pdf), Excel (xuri/excelize), CSV дэмжинэ
+  - Файлыг `uploads/statements/` хавтаст хадгална
+  - Gemini AI-аар хэрэглэгчийн санхүүгийн context-той хамт анализ хийнэ
+  - API key байхгүй үед basic line count analysis
+- `POST /api/v1/ai/chat` сайжруулалт:
+  - Chat history (сүүлийн 20 message) AI-д дамжуулна
+  - `formatAIError()` function — quota/auth/network алдааны мессеж Монгол хэлээр
+
+### Config өөрчлөлт
+- `AI_API_KEY` + `AI_MODEL` env var
+- Alias support: `GEMINI_API_KEY`, `GOOGLE_API_KEY`
+
+### Dependencies added
+- github.com/google/generative-ai-go — Gemini SDK
+- github.com/xuri/excelize/v2 — Excel parser
+- github.com/ledongthuc/pdf — PDF text extractor
+

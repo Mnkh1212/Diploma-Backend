@@ -3,3 +3,8 @@ vendor/
 *.test
 .env
 .gocache/
+uploads/
+build/
+dist/
+.DS_Store
+*.log
