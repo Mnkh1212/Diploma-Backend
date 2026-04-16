@@ -13,9 +13,13 @@ import (
 var DB *gorm.DB
 
 func Connect(cfg *config.Config) *gorm.DB {
+	sslmode := "disable"
+	if cfg.DBHost != "localhost" && cfg.DBHost != "postgres" {
+		sslmode = "require"
+	}
 	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName,
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, sslmode,
 	)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
