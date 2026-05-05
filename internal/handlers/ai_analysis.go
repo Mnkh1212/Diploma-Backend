@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -314,10 +315,34 @@ func goFallbackParse(path string) (*models.ParsedStatement, error) {
 		Transactions: []models.ParsedTransaction{},
 	}
 
-	// Mongolian bank format-ыг урьтал шалгана. ОРЛОГО / ЗАРЛАГА keyword-ууд ихтэй
+	// Khan Bank format-ыг түрүүлж шалгана. Хаан банк нь хүснэгт format-тай
+	// (Эхний үлдэгдэл | Дебит | Кредит | Эцсийн үлдэгдэл) — ОРЛОГО/ЗАРЛАГА
+	// keyword-гүй учир Mongolian parser-аар уншиж чадахгүй.
+	lowAll := strings.ToLower(rawText)
+	isKhan := strings.Contains(lowAll, "хаан банк") ||
+		strings.Contains(lowAll, "khan bank") ||
+		strings.Contains(lowAll, "khaan bank") ||
+		(strings.Contains(lowAll, "эхний үлдэгдэл") &&
+			strings.Contains(lowAll, "дебит") &&
+			strings.Contains(lowAll, "кредит"))
+	if isKhan {
+		khanTxs := parseKhanFormat(rawText)
+		if len(khanTxs) > 0 {
+			parsed.Transactions = khanTxs
+			for _, tx := range khanTxs {
+				if tx.Type == "income" {
+					parsed.TotalIncome += tx.Amount
+				} else if tx.Type == "expense" {
+					parsed.TotalExpenses += tx.Amount
+				}
+			}
+		}
+	}
+
+	// Mongolian bank format-ыг шалгана. ОРЛОГО / ЗАРЛАГА keyword-ууд ихтэй
 	// бол Монгол banking parser ашиглана (Голомт г.м).
 	upperAll := strings.ToUpper(rawText)
-	if strings.Count(upperAll, "ОРЛОГО")+strings.Count(upperAll, "ЗАРЛАГА") >= 4 {
+	if len(parsed.Transactions) == 0 && strings.Count(upperAll, "ОРЛОГО")+strings.Count(upperAll, "ЗАРЛАГА") >= 4 {
 		mongolTxs := parseMongolianFormat(rawText)
 		if len(mongolTxs) > 0 {
 			parsed.Transactions = mongolTxs
@@ -474,6 +499,157 @@ func parseMongolianFormat(text string) []models.ParsedTransaction {
 	}
 
 	return txs
+}
+
+// parseKhanFormat - Хаан банкны хуулгын text format-ыг уншина.
+//
+// Мөр тус бүрд: № YYYY/MM/DD HH:MM 5XXX <opening> [<debit_or_credit>] <closing> <desc>
+// 4 оронтой салбарын код (5000, 5008, 5021, 5031, 5076 г.м) нь анкер.
+// Дебит дүнгийн өмнө "-" prefix байдаг; close - open зөрүүгээр income/expense-г шийднэ.
+var khanRowRe = regexp.MustCompile(`^\s*\d+\s+(\d{4}/\d{2}/\d{2})\s+\d{1,2}:\d{2}\s+\d{4}\s+(.+)$`)
+var khanAmountRe = regexp.MustCompile(`-?\(?\s*(?:\d{1,3}(?:[ ,']\d{3})+|\d{1,9})\.\d{1,2}\s*\)?`)
+
+func parseKhanFormat(text string) []models.ParsedTransaction {
+	var txs []models.ParsedTransaction
+	seen := map[string]bool{}
+
+	for _, raw := range strings.Split(text, "\n") {
+		m := khanRowRe.FindStringSubmatch(raw)
+		if m == nil {
+			continue
+		}
+		date := normalizeDateStr(m[1])
+		rest := m[2]
+
+		amounts := khanAmountRe.FindAllString(rest, -1)
+		if len(amounts) < 2 {
+			continue
+		}
+
+		// 3 хүртэлх дүн авна: open, debit_or_credit, close
+		nums := make([]float64, 0, 3)
+		for i := 0; i < len(amounts) && i < 3; i++ {
+			v, ok := parseAmountStr(amounts[i])
+			if !ok {
+				continue
+			}
+			nums = append(nums, v)
+		}
+		if len(nums) < 2 {
+			continue
+		}
+
+		var amount, closeBal float64
+		var txType string
+		if len(nums) >= 3 {
+			openBal := nums[0]
+			mid := nums[1]
+			closeBal = nums[2]
+			diff := closeBal - openBal
+			if absFloat(diff) < 1 {
+				continue
+			}
+			amount = absFloat(mid)
+			if diff > 0 {
+				txType = "income"
+			} else {
+				txType = "expense"
+			}
+		} else {
+			openBal := nums[0]
+			closeBal = nums[1]
+			diff := closeBal - openBal
+			if absFloat(diff) < 100 {
+				continue
+			}
+			amount = absFloat(diff)
+			if diff > 0 {
+				txType = "income"
+			} else {
+				txType = "expense"
+			}
+		}
+
+		if amount < 100 {
+			continue
+		}
+
+		// Тайлбар — олдсон бүх дүнг хасч авна
+		desc := rest
+		for _, a := range amounts[:min(3, len(amounts))] {
+			desc = strings.Replace(desc, a, "", 1)
+		}
+		desc = strings.TrimSpace(strings.Trim(strings.Join(strings.Fields(desc), " "), " -|"))
+		if desc == "" {
+			desc = "—"
+		}
+
+		key := fmt.Sprintf("%s|%.2f|%s|%s", date, amount, txType, truncate(desc, 60))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		if len(desc) > 200 {
+			desc = desc[:200]
+		}
+
+		txs = append(txs, models.ParsedTransaction{
+			Date:        date,
+			Description: desc,
+			Amount:      amount,
+			Type:        txType,
+			Category:    classifyCategory(desc),
+			Balance:     closeBal,
+		})
+	}
+
+	return txs
+}
+
+func parseAmountStr(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	neg := false
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		neg = true
+		s = s[1 : len(s)-1]
+	}
+	if strings.HasPrefix(s, "-") {
+		neg = true
+		s = s[1:]
+	}
+	clean := strings.NewReplacer(",", "", " ", "", "'", "", "₮", "", "MNT", "", "mnt", "").Replace(s)
+	v, err := strconv.ParseFloat(clean, 64)
+	if err != nil {
+		return 0, false
+	}
+	if neg {
+		v = -v
+	}
+	return v, true
+}
+
+func normalizeDateStr(s string) string {
+	s = strings.TrimSpace(s)
+	for _, sep := range []string{"-", "/", "."} {
+		parts := strings.Split(s, sep)
+		if len(parts) == 3 {
+			if len(parts[0]) == 4 {
+				return fmt.Sprintf("%s-%s-%s", parts[0], pad2(parts[1]), pad2(parts[2]))
+			}
+			if len(parts[2]) == 4 {
+				return fmt.Sprintf("%s-%s-%s", parts[2], pad2(parts[1]), pad2(parts[0]))
+			}
+		}
+	}
+	return s
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func matchDateOnly(line string) (string, bool) {

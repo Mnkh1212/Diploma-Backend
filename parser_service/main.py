@@ -179,9 +179,25 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction]]:
             text_parts.append(txt)
     text = "\n".join(text_parts)
 
-    # Mongolian bank format-ыг урьтал шалгана. Хэрэв "ОРЛОГО" / "ЗАРЛАГА" cyrillic
-    # keyword-ууд ихтэй бол Mongolian parser ашиглана — ингэснээр илүү нарийн.
     upper = text.upper()
+    low = text.lower()
+
+    # Khan Bank format-ыг түрүүлж шалгана. Хаан банк нь хүснэгт format-тай
+    # (Эхний үлдэгдэл | Дебит | Кредит | Эцсийн үлдэгдэл) — ОРЛОГО/ЗАРЛАГА
+    # keyword-гүй учир дараах Mongolian parser-аар уншиж чадахгүй.
+    is_khan = (
+        "хаан банк" in low
+        or "khan bank" in low
+        or "khaan bank" in low
+        or ("эхний үлдэгдэл" in low and "дебит" in low and "кредит" in low)
+    )
+    if is_khan:
+        khan_txs = parse_khan_format(content, text)
+        if khan_txs:
+            return text, khan_txs
+
+    # Mongolian bank format-ыг шалгана. Хэрэв "ОРЛОГО" / "ЗАРЛАГА" cyrillic
+    # keyword-ууд ихтэй бол Mongolian parser ашиглана — ингэснээр илүү нарийн.
     if upper.count("ОРЛОГО") + upper.count("ЗАРЛАГА") >= 4:
         txs = parse_mongolian_format(text)
         if txs:
@@ -207,6 +223,197 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction]]:
             if tx:
                 txs.append(tx)
     return text, txs
+
+
+# Хаан банкны хуулга нь хүснэгт format. Багануудын тоо PDF-ээс хамаарч өөрчлөгдөнө,
+# тиймээс header-ийн нэрээр баганыг олж унших нь хамгийн найдвартай.
+KHAN_HEADER_HINTS = {
+    "date": ["огноо"],
+    "branch": ["салбар"],
+    "open": ["эхний үлдэгдэл"],
+    "debit": ["дебит"],
+    "credit": ["кредит"],
+    "close": ["эцсийн үлдэгдэл"],
+    "desc": ["гүйлгээний утга", "утга"],
+    "account": ["харьцсан данс", "данс"],
+}
+
+
+def _khan_col(header: List[str], hints: List[str]) -> Optional[int]:
+    for idx, h in enumerate(header):
+        for hint in hints:
+            if hint in h:
+                return idx
+    return None
+
+
+def parse_khan_format(content: bytes, text: str) -> List[ParsedTransaction]:
+    """Хаан банкны хуулгад зориулсан parser.
+
+    PDF-ийн хүснэгтийг pdfplumber-ийн extract_tables-аар уншиж, Дебит / Кредит
+    баганыг тус тусад нь шалгана. Дебит > 0 → expense, Кредит > 0 → income.
+    Хэрэв хоёулаа хоосон бол эцсийн – эхний үлдэгдлийн зөрүүгээр шийднэ.
+    """
+    txs: List[ParsedTransaction] = []
+    seen_keys: set = set()
+
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables() or []:
+                    if not table or len(table) < 2:
+                        continue
+                    header = [str(c or "").strip().lower() for c in table[0]]
+                    if not any("эхний үлдэгдэл" in h for h in header):
+                        continue
+
+                    col_date = _khan_col(header, KHAN_HEADER_HINTS["date"])
+                    col_open = _khan_col(header, KHAN_HEADER_HINTS["open"])
+                    col_debit = _khan_col(header, KHAN_HEADER_HINTS["debit"])
+                    col_credit = _khan_col(header, KHAN_HEADER_HINTS["credit"])
+                    col_close = _khan_col(header, KHAN_HEADER_HINTS["close"])
+                    col_desc = _khan_col(header, KHAN_HEADER_HINTS["desc"])
+                    col_account = _khan_col(header, KHAN_HEADER_HINTS["account"])
+
+                    if col_open is None or col_close is None:
+                        continue
+
+                    for row in table[1:]:
+                        if not row:
+                            continue
+
+                        def cell(i: Optional[int]) -> str:
+                            if i is None or i >= len(row):
+                                return ""
+                            return str(row[i] or "").strip()
+
+                        date_raw = cell(col_date)
+                        # Огноогүй нэгтгэлийн мөрнүүд (нийт дүн г.м.)-ийг алгасна
+                        if not re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", date_raw):
+                            continue
+
+                        open_bal = normalize_amount(cell(col_open)) or 0.0
+                        debit_raw = cell(col_debit) if col_debit is not None else ""
+                        credit_raw = cell(col_credit) if col_credit is not None else ""
+                        close_bal = normalize_amount(cell(col_close)) or 0.0
+
+                        debit = abs(normalize_amount(debit_raw) or 0.0) if debit_raw else 0.0
+                        credit = abs(normalize_amount(credit_raw) or 0.0) if credit_raw else 0.0
+
+                        amount = 0.0
+                        tx_type = "expense"
+                        if credit > MIN_TX_AMOUNT:
+                            amount = credit
+                            tx_type = "income"
+                        elif debit > MIN_TX_AMOUNT:
+                            amount = debit
+                            tx_type = "expense"
+                        else:
+                            diff = close_bal - open_bal
+                            if abs(diff) < MIN_TX_AMOUNT:
+                                continue
+                            amount = abs(diff)
+                            tx_type = "income" if diff > 0 else "expense"
+
+                        desc = cell(col_desc) or "—"
+                        account = cell(col_account) if col_account is not None else ""
+                        if account and account not in desc:
+                            desc = f"{desc} ({account})"
+                        desc = re.sub(r"\s+", " ", desc).strip()[:200]
+
+                        date = normalize_date(re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", date_raw).group(0))
+                        key = (date, amount, tx_type, desc[:60])
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+
+                        txs.append(ParsedTransaction(
+                            date=date,
+                            description=desc,
+                            amount=amount,
+                            type=tx_type,
+                            category=classify(desc),
+                            balance=close_bal,
+                        ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("khan table parse failed: %s", exc)
+
+    if txs:
+        return txs
+
+    # Fallback: text-based row matching. Хаан банкны хуулгад мөр тус бүрд:
+    # № YYYY/MM/DD HH:MM 5XXX <opening> [<debit_or_credit>] <closing> <desc>
+    # 4 оронтой салбарын код (5000, 5008, 5021, 5031, 5076 г.м) нь анкер.
+    return _parse_khan_text(text)
+
+
+KHAN_ROW_RE = re.compile(
+    r"^\s*\d+\s+(\d{4}/\d{2}/\d{2})\s+\d{1,2}:\d{2}\s+(\d{4})\s+(.+)$"
+)
+
+
+def _parse_khan_text(text: str) -> List[ParsedTransaction]:
+    txs: List[ParsedTransaction] = []
+    seen_keys: set = set()
+    for raw_line in text.splitlines():
+        m = KHAN_ROW_RE.match(raw_line)
+        if not m:
+            continue
+        date = normalize_date(m.group(1))
+        rest = m.group(3)
+        amounts = AMOUNT_RE.findall(rest)
+        if len(amounts) < 2:
+            continue
+        # 2 эсвэл 3 дүн байж болно. Хамгийн утга учиртай нь:
+        #   - 3 байвал: open, debit_or_credit, close (debit нь "-" prefix-тэй байдаг)
+        #   - 2 байвал: open, close (no movement) — энэ үед алгасна
+        nums = [normalize_amount(a) for a in amounts[:3]]
+        nums = [n for n in nums if n is not None]
+        if len(nums) < 2:
+            continue
+        if len(nums) >= 3:
+            open_bal = nums[0]
+            mid = nums[1]
+            close_bal = nums[2]
+            # Дэлэгрэнгүй: open ба close-ийн зөрүү нь mid-ийн абсолют утгатай ойролцоо байх ёстой
+            diff = close_bal - open_bal
+            amount = abs(mid)
+            tx_type = "income" if diff > 0 else "expense"
+            # Хэрэв зөрүү бараг 0 бол mid-ийн тэмдгээр тодорхойлно
+            if abs(diff) < 1:
+                continue
+        else:
+            open_bal = nums[0]
+            close_bal = nums[1]
+            diff = close_bal - open_bal
+            if abs(diff) < MIN_TX_AMOUNT:
+                continue
+            amount = abs(diff)
+            tx_type = "income" if diff > 0 else "expense"
+
+        if amount < MIN_TX_AMOUNT:
+            continue
+
+        # Тайлбар — сүүлийн тооны араас
+        desc = rest
+        for a in amounts[:3]:
+            desc = desc.replace(a, "", 1)
+        desc = re.sub(r"\s+", " ", desc).strip(" -|") or "—"
+
+        key = (date, amount, tx_type, desc[:60])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        txs.append(ParsedTransaction(
+            date=date,
+            description=desc[:200],
+            amount=amount,
+            type=tx_type,
+            category=classify(desc),
+            balance=close_bal,
+        ))
+    return txs
 
 
 # Монгол банкны хуулга-д тааруулсан parser. Голомт зэрэг банкны formats:
@@ -329,24 +536,29 @@ SUMMARY_PATTERNS: List[Tuple[str, List[str]]] = [
         r"total\s*income",
         r"total\s*credit",
         r"нийт\s*кредит",
+        r"нийт\s*кредит\s*гүйлгээ",
     ]),
     ("total_expense", [
         r"нийт\s*зарлага",
         r"total\s*expense",
         r"total\s*debit",
         r"нийт\s*дебет",
+        r"нийт\s*дебит",
+        r"нийт\s*дебит\s*гүйлгээ",
     ]),
     ("opening_balance", [
         r"эхний\s*үлдэгдэл",
         r"opening\s*balance",
         r"тайлант\s*үеийн\s*эхний",
         r"эхний\s*\(.*?\)\s*үлдэгдэл",
+        r"эхний\s*дансны\s*үлдэгдэл",
     ]),
     ("closing_balance", [
         r"эцсийн\s*үлдэгдэл",
         r"closing\s*balance",
         r"эцэст\s*\(.*?\)\s*үлдэгдэл",
         r"үлдэгдэл\s*эцэст",
+        r"эцсийн\s*дансны\s*үлдэгдэл",
     ]),
 ]
 
