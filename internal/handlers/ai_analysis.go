@@ -599,12 +599,66 @@ func extractSummaryAmounts(raw string) map[string]float64 {
 	return out
 }
 
-// lastAmount - текстээс ХАМГИЙН СҮҮЛИЙН (≥100) том тоог буцаана.
+// isProperAmount - данс дугаар (10+ оронтой pure digit), qpay ID гэх мэтээс
+// жинхэнэ мөнгөн дүнг ялгана. Жинхэнэ amount нь:
+//
+//	a) Decimal цэгтэй ("5,000.00", "1234.50") — хамгийн найдвартай
+//	b) Эсвэл 7 хүртэл оронтой comma-тай ("5,000")
+//
+// Account number, qpay ID нь 10+ оронтой pure digit байдаг тул орохгүй.
+func isProperAmount(token string) bool {
+	t := strings.TrimSpace(token)
+	t = strings.TrimPrefix(t, "-")
+	t = strings.TrimSuffix(t, ".")
+	if t == "" {
+		return false
+	}
+	// Decimal-тай: ".00" эсвэл ".50" гэх мэт байх ёстой
+	if strings.Contains(t, ".") {
+		parts := strings.Split(t, ".")
+		if len(parts) == 2 && len(parts[1]) >= 1 && len(parts[1]) <= 2 {
+			// Integer хэсэг digit + comma/space ашиглахыг зөвшөөрнө
+			intPart := strings.NewReplacer(",", "", " ", "", "'", "").Replace(parts[0])
+			if len(intPart) <= 9 && allDigits(intPart) {
+				return true
+			}
+		}
+		return false
+	}
+	// Decimal-гүй: comma-тай (1,234) эсвэл 6-аас бага оронтой жижиг тоо
+	clean := strings.NewReplacer(",", "", " ", "", "'", "").Replace(t)
+	if !allDigits(clean) {
+		return false
+	}
+	// Comma-тай (1,234) бол amount гэж үзнэ
+	if strings.Contains(t, ",") || strings.Contains(t, " ") || strings.Contains(t, "'") {
+		return len(clean) <= 9
+	}
+	// Pure digit, separator-гүй: 6 оронтойгоос бага бол amount, бусад нь account number
+	return len(clean) <= 6
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// lastAmount - текстээс ХАМГИЙН СҮҮЛИЙН proper amount (decimal-тай эсвэл жижиг)-г буцаана.
 func lastAmount(s string) (float64, bool) {
 	tokens := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ' ' || r == '\n' || r == '\t' || r == '|' || r == ':' || r == '\r'
 	})
 	for i := len(tokens) - 1; i >= 0; i-- {
+		if !isProperAmount(tokens[i]) {
+			continue
+		}
 		raw := amountSep.Replace(tokens[i])
 		raw = strings.TrimSuffix(raw, ".")
 		if raw == "" {
@@ -621,13 +675,15 @@ func lastAmount(s string) (float64, bool) {
 	return 0, false
 }
 
-// firstAmount - текстээс эхний "том" тоог олж float буцаана. 100-аас бага тоо
-// (page номер, мөрийн дугаар гэх мэт) орхино.
+// firstAmount - текстээс эхний proper amount-г буцаана.
 func firstAmount(s string) (float64, bool) {
 	tokens := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ' ' || r == '\n' || r == '\t' || r == '|' || r == ':' || r == '\r'
 	})
 	for _, t := range tokens {
+		if !isProperAmount(t) {
+			continue
+		}
 		raw := amountSep.Replace(t)
 		raw = strings.TrimSuffix(raw, ".")
 		raw = strings.TrimPrefix(raw, ":")
