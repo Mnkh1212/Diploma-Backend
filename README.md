@@ -8,12 +8,14 @@ Diploma project — AI-based personal finance tracking and recommendation system
 
 | Layer     | Technology                                      |
 | --------- | ----------------------------------------------- |
-| Frontend  | React Native (Expo SDK 55) + TypeScript + NativeWind v4 |
+| Mobile    | React Native (Expo SDK 55) + TypeScript + NativeWind v4 |
+| Web       | React 18 + Vite + TypeScript + Tailwind + Recharts |
 | Backend   | Go 1.23 (Gin framework + GORM)                  |
+| Parser    | Python 3.12 (FastAPI + pdfplumber + pandas)     |
 | Database  | PostgreSQL 16                                    |
-| AI        | Built-in financial advisor engine                |
+| AI        | Gemini (chat + structured statement analysis)    |
 | Infra     | Docker + Docker Compose                          |
-| Deployment | Physical iPhone via USB (expo-dev-client)       |
+| Deployment | Physical iPhone via USB (expo-dev-client) / Web (Vite preview) |
 
 ## Project Structure
 
@@ -108,7 +110,7 @@ API host-ийг нэг газраас удирдах бол `frontend/src/config
 2. Select project → Signing & Capabilities → Team: Personal Team
 3. iPhone → Settings → General → VPN & Device Management → Trust developer
 
-## API Endpoints (34 routes)
+## API Endpoints (38+ routes)
 
 ### Auth (Public)
 - `POST /api/v1/auth/register` — Бүртгүүлэх
@@ -157,11 +159,22 @@ API host-ийг нэг газраас удирдах бол `frontend/src/config
 - `POST /api/v1/ai/chat` — Мессеж илгээх (AI хариу)
 - `DELETE /api/v1/ai/chats/:id` — Чат устгах
 
+### AI Analysis (банкны хуулга → structured JSON)
+- `POST /api/v1/ai/analysis` — Хуулга оруулж AI шинжилгээ хийх (multipart/form-data)
+- `GET /api/v1/ai/analyses` — Өмнөх анализуудын жагсаалт
+- `GET /api/v1/ai/analyses/:id` — Нэг анализ
+- `DELETE /api/v1/ai/analyses/:id` — Устгах
+
+`POST /api/v1/ai/analysis` нь дараах structured JSON-ыг буцаана: `opening_balance`,
+`closing_balance`, `total_income`, `total_expenses`, `net_cashflow`,
+`transactions[]`, `categories[]` (amount + percentage), `recommendations[]`,
+`ai_summary`. Frontend нь чарт зурахад шууд ашиглана.
+
 ### Activity Logs
 - `GET /api/v1/activity-logs` — Лог жагсаалт (paginated, filterable)
 - `GET /api/v1/activity-logs/summary` — Лог нэгтгэл
 
-## Database Models (9 tables)
+## Database Models (11 tables)
 
 | Model            | Description                            |
 |------------------|----------------------------------------|
@@ -174,6 +187,21 @@ API host-ийг нэг газраас удирдах бол `frontend/src/config
 | AIChat           | AI чатын session                       |
 | AIMessage        | Чатын мессежүүд                        |
 | ActivityLog      | Хэрэглэгчийн үйлдлийн бүртгэл        |
+| Notification     | Push notification (insight/warning/tip) |
+| AIAnalysis      | Банкны хуулга AI structured анализ      |
+
+## Components
+
+```
+Diploma-Backend/
+├── cmd/server/             # Go entry point
+├── internal/               # Go domain code
+├── parser_service/         # Python FastAPI parser microservice
+└── docker-compose.yml      # postgres + parser + backend
+
+Diploma-Frontend/           # React Native (Expo) — mobile
+Diploma-Web/                # React (Vite + Tailwind) — web client
+```
 
 ## Features
 

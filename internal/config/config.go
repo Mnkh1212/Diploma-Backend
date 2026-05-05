@@ -20,6 +20,8 @@ type Config struct {
 	GoogleWebClientID string
 	FacebookAppID     string
 	AppleBundleID     string
+	// Python parser microservice URL. Хоосон бол Go-н fallback parser ажиллана.
+	ParserServiceURL string
 }
 
 func Load() *Config {
@@ -34,11 +36,14 @@ func Load() *Config {
 		JWTSecret:  getEnv("JWT_SECRET", "fintrack-secret-key-change-in-production"),
 		Port:       getEnv("PORT", DefaultPort),
 		AIAPIKey:   getFirstEnv("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
-		AIModel:    getEnv("AI_MODEL", "gemini-2.0-flash"),
+		// Анхаар: gemini-2.0-flash нь зарим free key-ийн project-д quota=0
+		// байдаг тул gemini-2.5-flash-ийг default болгосон.
+		AIModel: getEnv("AI_MODEL", "gemini-2.5-flash"),
 		GoogleIOSClientID: getEnv("GOOGLE_IOS_CLIENT_ID", ""),
 		GoogleWebClientID: getEnv("GOOGLE_WEB_CLIENT_ID", ""),
 		FacebookAppID:     getEnv("FACEBOOK_APP_ID", ""),
 		AppleBundleID:     getEnv("APPLE_BUNDLE_ID", ""),
+		ParserServiceURL:  getEnv("PARSER_SERVICE_URL", ""),
 	}
 }
 

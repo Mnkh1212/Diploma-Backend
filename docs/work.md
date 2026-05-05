@@ -3,7 +3,7 @@
 ## Төслийн тодорхойлолт
 **Сэдэв:** Хиймэл оюун ухаанд суурилсан хувийн санхүүгийн хяналт ба зөвлөмжийн систем
 **Төрөл:** Их сургуулийн diploma ажил
-**Repo:** Backend: Mnkh1212/Diploma-Backend | Frontend: Mnkh1212/Diploma-Frontend
+**Repo:** Backend: Mnkh1212/Diploma-Backend | Frontend: Mnkh1212/Diploma-Frontend | Web: Mnkh1212/Diploma-Web
 
 ---
 
@@ -225,6 +225,113 @@
 - [ ] Custom categories нэмэх
 - [ ] Transaction update endpoint
 - [ ] Charts сайжруулах (react-native-svg)
+
+---
+
+## 2026-05-05 — Structured AI Analysis + Python parser + React Web (v1.1.0)
+
+### 1. Backend (Go) — Structured AI Analysis service
+
+**Шинэ модел:** `AIAnalysis` ([models.go](../internal/models/models.go))
+- Field-ууд: filename, bank_name, opening/closing_balance, total_income/expenses,
+  transaction_count, period_start/end, categories_json, transactions_json,
+  recommendations_json, ai_summary
+- DTOs: `ParsedStatement`, `ParsedTransaction`, `CategoryBreakdown`,
+  `AIAnalysisResponse`
+- `database.Migrate`-д бүртгэсэн.
+
+**Шинэ handler:** [internal/handlers/ai_analysis.go](../internal/handlers/ai_analysis.go)
+
+Хуулга оруулмагц процесс:
+1. Файлыг `uploads/statements/` хавтаст хадгална.
+2. **Python parser** (PARSER_SERVICE_URL) рүү multipart proxy.
+   Хариу ирэхгүй бол Go-н **fallback parser** ажиллана.
+3. **Монгол банкны зориулалттай parser** (`parseMongolianFormat`) —
+   Голомт г.м "ОРЛОГО / ЗАРЛАГА" keyword бүхий PDF-ийг таньж парс хийнэ.
+4. **Summary line override** (`extractSummaryAmounts`) — PDF дотор "НИЙТ ОРЛОГО",
+   "НИЙТ ЗАРЛАГА", "Эхний/Эцсийн үлдэгдэл" мөрнөөс яг тоонуудыг
+   олж нэгтгэлийн тооцоог давхар өргөмжилнө.
+5. AI key байвал Gemini-р **JSON форматтай** товч тойм + recommendation үүсгэнэ.
+6. Үр дүнг DB-д хадгална.
+7. **Auto-import:** Парс хийсэн гүйлгээнүүдийг бодит `Transaction` record болгож
+   хадгална → Dashboard, Гүйлгээ, Аналитик-д шууд харагдана.
+   Account.Balance-ийг (income − expense)-ээр шинэчилнэ.
+   `?import=false` query param-аар хааж болно.
+
+**Шинэ endpoint-ууд (4):**
+- `POST /api/v1/ai/analysis` — хуулга оруулж анализ + auto-import
+- `GET /api/v1/ai/analyses` — өмнөх анализуудын жагсаалт
+- `GET /api/v1/ai/analyses/:id` — нэг анализын дэлгэрэнгүй
+- `DELETE /api/v1/ai/analyses/:id` — анализ устгах
+
+### 2. Python parser microservice — `parser_service/`
+
+**Tech:** FastAPI + pdfplumber + pandas + openpyxl/xlrd
+
+**Endpoint:**
+- `POST /parse` — multipart upload, structured `ParsedStatement` JSON буцаана
+- `GET /health` — Docker healthcheck
+
+**Дэмжих формат:**
+- PDF (pdfplumber-аар хүснэгт + текст уншина)
+- Excel `.xlsx` / `.xls`
+- CSV
+
+**Монголын банкуудын автомат таних (8):**
+Khan Bank, Golomt, TDB, Khas, State Bank, M Bank, Capitron, Arig
+
+**Mongolian-format parser** (`parse_mongolian_format`):
+- "ОРЛОГО / ЗАРЛАГА" keyword бүхий мөр → гүйлгээ
+- Дүн нь keyword-ээс **өмнө** байна (Голомт хэв)
+- "ӨДРИЙН ОРЛОГО / ЗАРЛАГА / ҮЛДЭГДЭЛ" — өдрийн нэгтгэл (давхардахгүйн тулд алгасна)
+- "НИЙТ ОРЛОГО / ЗАРЛАГА", "Эхний/Эцсийн үлдэгдэл" — `extract_summary_amounts`-аар
+  override хийнэ
+- Огноог ганцаар мөрөөс таниад тухайн өдрийн context болгоно
+- Multi-line description-ийг үргэлжлүүлэн уншина
+
+**Туршсан үр дүн (Голомт PDF sample):**
+| Утга | Хүлээх | Гарсан |
+|---|---|---|
+| Total Income | 4,662,900 | 4,662,900 ✓ |
+| Total Expense | 3,856,888 | 3,856,888 ✓ |
+| Opening Balance | 5,405.50 | 5,405.50 ✓ |
+| Closing Balance | 1,151,417.50 | 1,151,417.50 ✓ |
+
+KFCMONGOL → "Хоол" гэж автомат ангилалд орсон.
+
+**Docker:** Port 8000, `Dockerfile` (python:3.12-slim).
+
+### 3. Docker / Config
+
+- [docker-compose.yml](../docker-compose.yml)-д `parser` service нэмсэн (port 8000)
+- Backend нь `parser` service-ээс health-тэй болсны дараа эхэлнэ (`depends_on`)
+- Backend env: `PARSER_SERVICE_URL=http://parser:8000`
+- `AI_MODEL` default-ыг `gemini-2.5-flash` болгосон ([config.go](../internal/config/config.go))
+  — `gemini-2.0-flash` нь зарим free tier project-д quota=0 байдаг
+- `.env.example` бүрэн шинэчилсэн
+
+### 4. Web client — `Diploma-Web/` (шинэ repo)
+
+**Tech:** React 18 + Vite + TypeScript + Tailwind CSS + Recharts + React Router 6
+
+**Дэлгэцүүд (5):**
+- `/login`, `/register` — нэвтрэх / бүртгэл
+- `/` — Dashboard (баланс, орлого/зарлага stat card, сүүлийн гүйлгээ, ангилал pie)
+- `/transactions` — гүйлгээний жагсаалт + paginated + шинэ гүйлгээ нэмэх modal
+- `/ai-chat` — AI чат с хадгалагдсан session list
+- `/ai-analysis` — банкны хуулга upload + 4 stat card + bar/pie chart + зөвлөмж + гүйлгээ
+- `/settings` — профайл засах + гарах
+
+**Зарчим:** AI ажил **бүгд backend дээр** — web нь зөвхөн API дуудна.
+
+### 5. Тулгарсан асуудлууд + засвар
+
+| Алдаа | Шалтгаан | Засвар |
+|---|---|---|
+| AI Chat: "quota exceeded" | `gemini-2.0-flash` нь key-ийн project-д `limit: 0` | Default model-ыг `gemini-2.5-flash` болгосон |
+| AI Analysis буруу дүн (4,781₮) | Parser line-аас "1, 2, 3" мөрийн дугаар, "01-01" огнооны хэсгийг гүйлгээ гэж андуурсан | Noise filter (< 100₮) + Mongolian-format parser |
+| Орлого/зарлага солигдсон (3.8M / 0.8M) | `extract_summary_amounts` keyword-ийн **араас** уншсан, Голомт **өмнө** бичдэг | Хоёр талыг шалгах |
+| Импортлосон гүйлгээ Dashboard-д харагдахгүй | AI Analysis нь зөвхөн `AIAnalysis` table-д хадгалсан | `importParsedAsTransactions` нэмж бодит `Transaction` record үүсгэнэ |
 
 ---
 

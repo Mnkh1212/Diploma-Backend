@@ -21,6 +21,7 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	activityHandler := handlers.NewActivityLogHandler(db)
 	notifHandler := handlers.NewNotificationHandler(db)
 	importHandler := handlers.NewImportHandler(db, cfg)
+	analysisHandler := handlers.NewAIAnalysisHandler(db, cfg)
 
 	// Public routes
 	api := r.Group("/api/v1")
@@ -90,7 +91,13 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		protected.PUT("/notifications/:id/read", notifHandler.MarkRead)
 		protected.PUT("/notifications/read-all", notifHandler.MarkAllRead)
 
-		// Import
+		// Import (хуучин — text-only AI summary)
 		protected.POST("/import/statement", importHandler.ImportStatement)
+
+		// AI Analysis (шинэ — structured JSON: balance, income, expense, transactions, charts)
+		protected.POST("/ai/analysis", analysisHandler.AnalyzeStatement)
+		protected.GET("/ai/analyses", analysisHandler.ListAnalyses)
+		protected.GET("/ai/analyses/:id", analysisHandler.GetAnalysis)
+		protected.DELETE("/ai/analyses/:id", analysisHandler.DeleteAnalysis)
 	}
 }

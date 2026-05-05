@@ -127,6 +127,77 @@ type Notification struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// AIAnalysis - банкны хуулга оруулсан үеийн structured AI анализ
+type AIAnalysis struct {
+	ID              uint      `json:"id" gorm:"primaryKey"`
+	UserID          uint      `json:"user_id" gorm:"not null;index"`
+	Filename        string    `json:"filename"`
+	BankName        string    `json:"bank_name"`
+	OpeningBalance  float64   `json:"opening_balance"`
+	ClosingBalance  float64   `json:"closing_balance"`
+	TotalIncome     float64   `json:"total_income"`
+	TotalExpenses   float64   `json:"total_expenses"`
+	TransactionCount int      `json:"transaction_count"`
+	PeriodStart     string    `json:"period_start"`
+	PeriodEnd       string    `json:"period_end"`
+	// JSON хэлбэрээр хадгалагдана. CategoryBreakdown, Transactions, Recommendations
+	CategoriesJSON      string    `json:"-" gorm:"type:text;column:categories_json"`
+	TransactionsJSON    string    `json:"-" gorm:"type:text;column:transactions_json"`
+	RecommendationsJSON string    `json:"-" gorm:"type:text;column:recommendations_json"`
+	AISummary           string    `json:"ai_summary" gorm:"type:text"`
+	User                User      `json:"-" gorm:"foreignKey:UserID"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// Statement parser-аас буцах structured response
+type ParsedStatement struct {
+	BankName         string                 `json:"bank_name"`
+	OpeningBalance   float64                `json:"opening_balance"`
+	ClosingBalance   float64                `json:"closing_balance"`
+	TotalIncome      float64                `json:"total_income"`
+	TotalExpenses    float64                `json:"total_expenses"`
+	PeriodStart      string                 `json:"period_start"`
+	PeriodEnd        string                 `json:"period_end"`
+	Transactions     []ParsedTransaction    `json:"transactions"`
+	CategoryBreakdown []CategoryBreakdown   `json:"category_breakdown"`
+}
+
+type ParsedTransaction struct {
+	Date        string  `json:"date"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Type        string  `json:"type"` // income / expense
+	Category    string  `json:"category"`
+	Balance     float64 `json:"balance"`
+}
+
+type CategoryBreakdown struct {
+	Category   string  `json:"category"`
+	Amount     float64 `json:"amount"`
+	Percentage float64 `json:"percentage"`
+	Count      int     `json:"count"`
+}
+
+// AIAnalysisResponse - frontend-рүү буцаагдах full payload
+type AIAnalysisResponse struct {
+	ID              uint                `json:"id"`
+	Filename        string              `json:"filename"`
+	BankName        string              `json:"bank_name"`
+	OpeningBalance  float64             `json:"opening_balance"`
+	ClosingBalance  float64             `json:"closing_balance"`
+	TotalIncome     float64             `json:"total_income"`
+	TotalExpenses   float64             `json:"total_expenses"`
+	NetCashflow     float64             `json:"net_cashflow"`
+	TransactionCount int                `json:"transaction_count"`
+	PeriodStart     string              `json:"period_start"`
+	PeriodEnd       string              `json:"period_end"`
+	Transactions    []ParsedTransaction `json:"transactions"`
+	Categories      []CategoryBreakdown `json:"categories"`
+	Recommendations []string            `json:"recommendations"`
+	AISummary       string              `json:"ai_summary"`
+	CreatedAt       time.Time           `json:"created_at"`
+}
+
 // Request/Response DTOs
 
 type RegisterRequest struct {

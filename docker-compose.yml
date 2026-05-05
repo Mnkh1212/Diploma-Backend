@@ -16,6 +16,20 @@ services:
       timeout: 5s
       retries: 5
 
+  parser:
+    build:
+      context: ./parser_service
+      dockerfile: Dockerfile
+    container_name: fintrack-parser
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -32,10 +46,14 @@ services:
       JWT_SECRET: fintrack-diploma-secret-key-2024
       PORT: 8080
       AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gemini-2.5-flash}
+      PARSER_SERVICE_URL: http://parser:8000
     volumes:
       - uploads_data:/app/uploads
     depends_on:
       postgres:
+        condition: service_healthy
+      parser:
         condition: service_healthy
     restart: unless-stopped
 
