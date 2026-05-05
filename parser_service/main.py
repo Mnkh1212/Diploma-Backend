@@ -93,14 +93,17 @@ def classify(desc: str) -> str:
 
 
 BANK_KEYWORDS = [
-    ("Khan Bank", ["khan bank", "хаан банк"]),
-    ("Golomt Bank", ["golomt", "голомт"]),
-    ("TDB", ["tdb", "trade and development", "худалдаа хөгжил"]),
-    ("Khas Bank", ["khas", "хас банк", "xacbank"]),
+    # Khan Bank: ХААН БАНК / KHAN BANK / XAAH БАНК (PDF text extraction-аас хамаарч)
+    ("Khan Bank", ["khan bank", "khaan bank", "хаан банк", "xaah банк"]),
+    ("Golomt Bank", ["golomt bank", "голомт банк", "голомт"]),
+    # TDB — "tdb bank" эсвэл "trade and development" гэж тодорхой ярьсан үед л таних
+    # (TDBM13361 гэх мэт transfer ID-аас зайлсхийнэ)
+    ("TDB", ["tdb bank", "trade and development bank", "худалдаа хөгжлийн банк"]),
+    ("Khas Bank", ["khas bank", "хас банк", "xacbank"]),
     ("State Bank", ["state bank", "төрийн банк"]),
     ("M Bank", ["m bank", "м банк"]),
-    ("Capitron Bank", ["capitron"]),
-    ("Arig Bank", ["arig bank"]),
+    ("Capitron Bank", ["capitron bank", "капитрон банк"]),
+    ("Arig Bank", ["arig bank", "ариг банк"]),
 ]
 
 

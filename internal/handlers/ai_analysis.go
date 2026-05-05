@@ -783,16 +783,29 @@ func absFloat(f float64) float64 {
 
 func detectBankName(raw string) string {
 	low := strings.ToLower(raw)
+	// ⚠️ Дараалал чухал! Khan Bank / Голомт-ыг урьтал шалгана. TDB-ыг
+	// "TDBM13361" зэрэг transfer ID-аас зайлсхийхийн тулд "tdb bank" гэж
+	// тодорхой ярьсан үед л таних.
 	switch {
-	case strings.Contains(low, "khan bank"), strings.Contains(low, "хаан банк"):
+	case strings.Contains(low, "khan bank"),
+		strings.Contains(low, "khaan bank"),
+		strings.Contains(low, "хаан банк"),
+		strings.Contains(low, "xaah банк"):
 		return "Khan Bank"
-	case strings.Contains(low, "golomt"), strings.Contains(low, "голомт"):
+	case strings.Contains(low, "golomt bank"),
+		strings.Contains(low, "голомт банк"),
+		strings.Contains(low, "голомт"):
 		return "Golomt Bank"
-	case strings.Contains(low, "tdb"), strings.Contains(low, "trade and development"), strings.Contains(low, "худалдаа хөгжил"):
+	case strings.Contains(low, "tdb bank"),
+		strings.Contains(low, "trade and development bank"),
+		strings.Contains(low, "худалдаа хөгжлийн банк"):
 		return "TDB"
-	case strings.Contains(low, "khas"), strings.Contains(low, "хас банк"), strings.Contains(low, "xacbank"):
+	case strings.Contains(low, "khas bank"),
+		strings.Contains(low, "хас банк"),
+		strings.Contains(low, "xacbank"):
 		return "Khas Bank"
-	case strings.Contains(low, "state bank"), strings.Contains(low, "төрийн банк"):
+	case strings.Contains(low, "state bank"),
+		strings.Contains(low, "төрийн банк"):
 		return "State Bank"
 	default:
 		return "Unknown Bank"
