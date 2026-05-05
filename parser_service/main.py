@@ -342,13 +342,13 @@ def parse_khan_format(content: bytes, text: str) -> List[ParsedTransaction]:
     except Exception as exc:  # noqa: BLE001
         log.warning("khan table parse failed: %s", exc)
 
-    if txs:
-        return txs
-
-    # Fallback: text-based row matching. Хаан банкны хуулгад мөр тус бүрд:
-    # № YYYY/MM/DD HH:MM 5XXX <opening> [<debit_or_credit>] <closing> <desc>
-    # 4 оронтой салбарын код (5000, 5008, 5021, 5031, 5076 г.м) нь анкер.
-    return _parse_khan_text(text)
+    # Текстээс ч давхар уншаад илүү гүйлгээ олдсон тал руу нь сонгоно. PDF
+    # хүснэгтэд multi-line cells/page break-ээс шалтгаалж зарим мөр алддагтай
+    # уялдан илүү найдвартай.
+    text_txs = _parse_khan_text(text)
+    if len(text_txs) > len(txs):
+        return text_txs
+    return txs or text_txs
 
 
 KHAN_ROW_RE = re.compile(
@@ -896,15 +896,17 @@ async def parse_statement(file: UploadFile = File(...)):
         expense = summary["total_expense"]
 
     # Khan Bank footer: "Нийт дүн: <debit> <credit>" гэсэн форматтай
-    # (debit = expense, credit = income).
+    # (debit = expense, credit = income). pdfplumber-аас гарч ирэх ялгаа: tab,
+    # multiple spaces, NBSP, эсвэл шинэ мөрөөр salgaмаагдаж болно.
     if bank_hint == "Khan Bank":
         khan_total = re.search(
-            r"нийт\s*дүн[:\s]*("
+            r"нийт\s*дүн[\s:]*("
             + AMOUNT_RE.pattern
-            + r")\s+("
+            + r")[\s ]+("
             + AMOUNT_RE.pattern
             + r")",
             (text or "").lower(),
+            re.DOTALL,
         )
         if khan_total:
             d = normalize_amount(khan_total.group(1))
@@ -922,6 +924,17 @@ async def parse_statement(file: UploadFile = File(...)):
         closing = summary["closing_balance"]
     else:
         _, closing = derive_balances(txs, income, expense)
+
+    # Khan Bank-д extract_summary_amounts нь column header
+    # "Эхний үлдэгдэл / Эцсийн үлдэгдэл"-ийг "summary line" гэж буруу таагаад
+    # эхний мөрийн opening_balance-ыг эцсийн үлдэгдэл болгож тавьдаг алдаа байсан.
+    # Khan-д үргэлж транзакцуудаас бодсон утгыг ашиглана.
+    if bank_hint == "Khan Bank" and txs:
+        first = txs[0]
+        # ParsedTransaction.balance = closing balance of that row
+        signed = first.amount if first.type == "income" else -first.amount
+        opening = first.balance - signed
+        closing = txs[-1].balance
 
     # Хэрэв гүйлгээний нийлбэр нь summary-аас зөрж байгаа бол ангилал-ыг
     # дахин жинлэнэ — total_expense дотор % нь зөв байгаа эсэхийг хангана.
