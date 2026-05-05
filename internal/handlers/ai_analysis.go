@@ -984,9 +984,10 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 	// 3. Гүйлгээ бүрийг хадгална
 	var inserted int
 	var totalIn, totalOut float64
+	const maxSaneAmount = 1_000_000_000 // 1 тэрбум (parser алдаатай дүн)
 	for _, p := range parsed.Transactions {
-		if p.Amount < 100 {
-			continue
+		if p.Amount < 100 || p.Amount > maxSaneAmount {
+			continue // parser-аас гарсан хэт жижиг эсвэл хэт том буруу дүн
 		}
 		if p.Type != "income" && p.Type != "expense" {
 			continue
