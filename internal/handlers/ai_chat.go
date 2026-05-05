@@ -384,6 +384,8 @@ func formatAIError(err error) string {
 	message := strings.ToLower(err.Error())
 
 	switch {
+	case strings.Contains(message, "leaked"):
+		return "AI API key нь олон нийтэд илэрсэн тул Google автоматаар хаасан байна. Шинэ key үүсгэж, Render-ийн `AI_API_KEY` env var-ыг шинэчлэнэ үү."
 	case strings.Contains(message, "api key"), strings.Contains(message, "permission denied"), strings.Contains(message, "unauthenticated"), strings.Contains(message, "authentication"):
 		return "AI API key буруу эсвэл хүчингүй байна. Key-гээ шалгаад backend-ээ restart хийгээрэй."
 	case strings.Contains(message, "quota"), strings.Contains(message, "rate limit"), strings.Contains(message, "resource_exhausted"):
