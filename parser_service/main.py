@@ -328,10 +328,8 @@ def parse_khan_format(content: bytes, text: str) -> List[ParsedTransaction]:
                         desc = re.sub(r"\s+", " ", desc).strip()[:200]
 
                         date = normalize_date(re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", date_raw).group(0))
-                        key = (date, amount, tx_type, desc[:60])
-                        if key in seen_keys:
-                            continue
-                        seen_keys.add(key)
+                        # Khan хуулгад нэг өдөрт ижил дүнтэй (жнь 100₮ хураамж)
+                        # давтагдсан гүйлгээ ердийн зүйл — dedup хийхгүй.
 
                         txs.append(ParsedTransaction(
                             date=date,
@@ -360,7 +358,6 @@ KHAN_ROW_RE = re.compile(
 
 def _parse_khan_text(text: str) -> List[ParsedTransaction]:
     txs: List[ParsedTransaction] = []
-    seen_keys: set = set()
     for raw_line in text.splitlines():
         m = KHAN_ROW_RE.match(raw_line)
         if not m:
@@ -405,11 +402,6 @@ def _parse_khan_text(text: str) -> List[ParsedTransaction]:
         for a in amounts[:3]:
             desc = desc.replace(a, "", 1)
         desc = re.sub(r"\s+", " ", desc).strip(" -|") or "—"
-
-        key = (date, amount, tx_type, desc[:60])
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
 
         txs.append(ParsedTransaction(
             date=date,
@@ -902,6 +894,25 @@ async def parse_statement(file: UploadFile = File(...)):
         income = summary["total_income"]
     if "total_expense" in summary:
         expense = summary["total_expense"]
+
+    # Khan Bank footer: "Нийт дүн: <debit> <credit>" гэсэн форматтай
+    # (debit = expense, credit = income).
+    if bank_hint == "Khan Bank":
+        khan_total = re.search(
+            r"нийт\s*дүн[:\s]*("
+            + AMOUNT_RE.pattern
+            + r")\s+("
+            + AMOUNT_RE.pattern
+            + r")",
+            (text or "").lower(),
+        )
+        if khan_total:
+            d = normalize_amount(khan_total.group(1))
+            c = normalize_amount(khan_total.group(2))
+            if d is not None and abs(d) > 100:
+                expense = abs(d)
+            if c is not None and abs(c) > 100:
+                income = abs(c)
 
     if "opening_balance" in summary:
         opening = summary["opening_balance"]
