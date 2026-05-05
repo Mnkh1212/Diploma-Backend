@@ -13,6 +13,8 @@ import (
 	"fintrack-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/option"
 	"gorm.io/gorm"
 )
 
@@ -20,6 +22,8 @@ type AIChatHandler struct {
 	DB  *gorm.DB
 	Cfg *config.Config
 }
+
+const aiSetupMessage = "AI API key тохируулаагүй байна. Backend орчинд `AI_API_KEY`, `GEMINI_API_KEY`, эсвэл `GOOGLE_API_KEY`-ийн аль нэгийг тохируулаад server-ээ restart хийгээрэй."
 
 func NewAIChatHandler(db *gorm.DB, cfg *config.Config) *AIChatHandler {
 	return &AIChatHandler{DB: db, Cfg: cfg}
@@ -96,7 +100,12 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	aiResponse := h.callAIChat(userID, req.Message, previousMessages)
+	var aiResponse string
+	if h.Cfg.AIAPIKey != "" {
+		aiResponse = h.callGemini(userID, req.Message, previousMessages)
+	} else {
+		aiResponse = aiSetupMessage
+	}
 
 	aiMsg := models.AIMessage{ChatID: chat.ID, Role: "assistant", Content: aiResponse}
 	if err := h.DB.Create(&aiMsg).Error; err != nil {
@@ -116,11 +125,18 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 	LogActivity(h.DB, userID, "ai_chat_message", "ai_chat", chat.ID, "", "success", c.ClientIP())
 }
 
-func (h *AIChatHandler) callAIChat(userID uint, userMessage string, previousMessages []models.AIMessage) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+func (h *AIChatHandler) callGemini(userID uint, userMessage string, previousMessages []models.AIMessage) string {
+	ctx := context.Background()
 
-	systemPrompt := fmt.Sprintf(
+	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
+	if err != nil {
+		log.Printf("gemini client init failed: %v", err)
+		return formatAIError(err)
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel(h.Cfg.AIModel)
+	model.SystemInstruction = genai.NewUserContent(genai.Text(fmt.Sprintf(
 		`Та "FinTrack" санхүүгийн зөвлөгч AI юм. Хэрэглэгчийн санхүүгийн мэдээлэлд тулгуурлан Монгол хэлээр зөвлөгөө өгнө.
 
 Хэрэглэгчийн санхүүгийн мэдээлэл:
@@ -132,23 +148,33 @@ func (h *AIChatHandler) callAIChat(userID uint, userMessage string, previousMess
 - Хэрэглэгчийн санхүүгийн мэдээлэлд тулгуурлан бодит зөвлөгөө өгнө
 - Хэмнэлт, хөрөнгө оруулалт, төсөвлөлтийн талаар зөвлөнө
 - Товч, ойлгомжтой хариулна
-- Emoji ашиглаж болно`, h.buildFinancialContext(userID))
+- Emoji ашиглаж болно`, h.buildFinancialContext(userID))))
 
-	history := make([]aiMessage, 0, len(previousMessages))
+	cs := model.StartChat()
 	for _, msg := range previousMessages {
-		role := "user"
-		if msg.Role != "user" {
-			role = "assistant"
+		if msg.Role == "user" {
+			cs.History = append(cs.History, &genai.Content{
+				Role:  "user",
+				Parts: []genai.Part{genai.Text(msg.Content)},
+			})
+		} else {
+			cs.History = append(cs.History, &genai.Content{
+				Role:  "model",
+				Parts: []genai.Part{genai.Text(msg.Content)},
+			})
 		}
-		history = append(history, aiMessage{Role: role, Content: msg.Content})
 	}
 
-	resp, err := callAI(ctx, systemPrompt, history, userMessage)
+	resp, err := cs.SendMessage(ctx, genai.Text(userMessage))
 	if err != nil {
-		log.Printf("AI chat failed: %v", err)
+		log.Printf("gemini send message failed for model %s: %v", h.Cfg.AIModel, err)
 		return formatAIError(err)
 	}
-	return resp
+
+	if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+		return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
+	}
+	return "Хариулт үүсгэж чадсангүй."
 }
 
 func (h *AIChatHandler) buildFinancialContext(userID uint) string {
@@ -358,12 +384,16 @@ func formatAIError(err error) string {
 	message := strings.ToLower(err.Error())
 
 	switch {
-	case strings.Contains(message, "rate limit"), strings.Contains(message, "429"), strings.Contains(message, "too many requests"):
-		return "AI үйлчилгээний хүсэлтийн хязгаарт хүрсэн байна. Хэдэн секунд хүлээгээд дахин оролдоно уу."
-	case strings.Contains(message, "deadline"), strings.Contains(message, "timeout"), strings.Contains(message, "connection"), strings.Contains(message, "network"), strings.Contains(message, "unavailable"), strings.Contains(message, "no such host"):
-		return "AI үйлчилгээ рүү холбогдож чадсангүй. Интернет холболтоо шалгаарай."
-	case strings.Contains(message, "status 5"):
-		return "AI үйлчилгээ түр зуур ажиллахгүй байна. Хэдэн минутын дараа дахин оролдоно уу."
+	case strings.Contains(message, "leaked"):
+		return "AI API key нь олон нийтэд илэрсэн тул Google автоматаар хаасан байна. Шинэ key үүсгэж, Render-ийн `AI_API_KEY` env var-ыг шинэчлэнэ үү."
+	case strings.Contains(message, "api key"), strings.Contains(message, "permission denied"), strings.Contains(message, "unauthenticated"), strings.Contains(message, "authentication"):
+		return "AI API key буруу эсвэл хүчингүй байна. Key-гээ шалгаад backend-ээ restart хийгээрэй."
+	case strings.Contains(message, "quota"), strings.Contains(message, "rate limit"), strings.Contains(message, "resource_exhausted"):
+		return "AI үйлчилгээний quota эсвэл rate limit дууссан байна. Дараа дахин оролдоно уу."
+	case strings.Contains(message, "model"), strings.Contains(message, "not found"), strings.Contains(message, "unsupported"):
+		return "AI model нэр буруу эсвэл энэ account дээр дэмжигдэхгүй байна. `AI_MODEL` тохиргоогоо шалгаарай."
+	case strings.Contains(message, "deadline"), strings.Contains(message, "timeout"), strings.Contains(message, "connection"), strings.Contains(message, "network"), strings.Contains(message, "unavailable"):
+		return "AI үйлчилгээ рүү холбогдож чадсангүй. Интернет холболт болон backend server-ийн сүлжээг шалгаарай."
 	default:
 		return fmt.Sprintf("AI үйлчилгээ алдаа өглөө: %s", err.Error())
 	}

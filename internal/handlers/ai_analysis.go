@@ -21,6 +21,8 @@ import (
 	"fintrack-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/option"
 	"gorm.io/gorm"
 )
 
@@ -1047,10 +1049,24 @@ func computeCategoryBreakdown(txs []models.ParsedTransaction) []models.CategoryB
 // ===================== AI insights =====================
 
 func (h *AIAnalysisHandler) generateAIInsights(userID uint, parsed *models.ParsedStatement) (string, []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Хэрэв AI key байхгүй бол rule-based fallback
+	if h.Cfg.AIAPIKey == "" {
+		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	systemPrompt := `Та "FinTrack" санхүүгийн зөвлөгч AI юм. Монгол хэлээр товч, тодорхой хариулна.
+	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
+	if err != nil {
+		log.Printf("gemini client init failed in analysis: %v", err)
+		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel(h.Cfg.AIModel)
+	model.SystemInstruction = genai.NewUserContent(genai.Text(
+		`Та "FinTrack" санхүүгийн зөвлөгч AI юм. Монгол хэлээр товч, тодорхой хариулна.
 Хэрэглэгчийн банкны хуулгад тулгуурлан JSON форматтай хариулна. Бусад текст, тайлбар бичихгүй.
 
 Schema:
@@ -1062,24 +1078,35 @@ Schema:
 Дүрэм:
 - Мөнгөн дүнг ₮ тэмдэгтэй, монгол ёсоор бичнэ.
 - Recommendations дэлгэрэнгүй, бодит тоонд тулгуурласан байна.
-- Хариулт зөвхөн valid JSON. Markdown код блок ашиглахгүй.`
+- Хариулт зөвхөн valid JSON. Markdown код блок ашиглахгүй.`))
 
 	prompt := buildAnalysisPrompt(parsed)
 
-	raw, err := callAI(ctx, systemPrompt, nil, prompt)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
-		log.Printf("AI analysis failed: %v", err)
+		log.Printf("gemini analysis failed: %v", err)
 		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
 	}
 
-	raw = stripCodeFence(raw)
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
+	}
+
+	raw := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
+	raw = strings.TrimSpace(raw)
+	// Gemini заримдаа ```json ... ``` буцаадаг
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
 
 	var parsedAI struct {
 		Summary         string   `json:"summary"`
 		Recommendations []string `json:"recommendations"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsedAI); err != nil {
-		log.Printf("AI analysis JSON parse failed: %v\nraw=%s", err, raw)
+		log.Printf("gemini analysis JSON parse failed: %v\nraw=%s", err, raw)
+		// JSON болохгүй бол raw-ийг summary болгоё
 		return raw, ruleBasedRecommendations(parsed)
 	}
 	if parsedAI.Summary == "" {
