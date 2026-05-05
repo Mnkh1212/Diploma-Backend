@@ -170,8 +170,14 @@ def normalize_date(raw: str) -> str:
 # ===================== Parsers =====================
 
 
-def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction]]:
-    """Extract text + transactions from a PDF bank statement."""
+def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction], Optional[str]]:
+    """Extract text + transactions from a PDF bank statement.
+
+    Returns (text, transactions, bank_hint). bank_hint нь parser-ийн төрлөөс
+    хамаарч bank_name-ийг override хийхэд хэрэглэнэ — PDF-ийн banner glyph-уудыг
+    pdfplumber танихгүй байсан ч (жнь "ХААН БАНК" нь bold font-той учир `nnnn`-р
+    гарч ирдэг) хүснэгтийн header-ээр банкийг тогтоох боломж олгоно.
+    """
     text_parts: List[str] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page in pdf.pages:
@@ -194,14 +200,14 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction]]:
     if is_khan:
         khan_txs = parse_khan_format(content, text)
         if khan_txs:
-            return text, khan_txs
+            return text, khan_txs, "Khan Bank"
 
     # Mongolian bank format-ыг шалгана. Хэрэв "ОРЛОГО" / "ЗАРЛАГА" cyrillic
     # keyword-ууд ихтэй бол Mongolian parser ашиглана — ингэснээр илүү нарийн.
     if upper.count("ОРЛОГО") + upper.count("ЗАРЛАГА") >= 4:
         txs = parse_mongolian_format(text)
         if txs:
-            return text, txs
+            return text, txs, None
 
     # Generic table extraction
     txs: List[ParsedTransaction] = []
@@ -222,7 +228,7 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction]]:
             tx = line_to_tx(line)
             if tx:
                 txs.append(tx)
-    return text, txs
+    return text, txs, None
 
 
 # Хаан банкны хуулга нь хүснэгт format. Багануудын тоо PDF-ээс хамаарч өөрчлөгдөнө,
@@ -778,13 +784,18 @@ def line_to_tx(line: str) -> Optional[ParsedTransaction]:
 
 
 MIN_TX_AMOUNT = 100.0  # 100₮-өөс бага noise-уудыг хаяна
+MAX_TX_AMOUNT = 1_000_000_000.0  # 1 тэрбумаас дээш — дансны дугаар/parser алдаа
 
 
 def filter_noise(transactions: List[ParsedTransaction]) -> List[ParsedTransaction]:
-    """Page numbers, мөрийн дугаар, date-ийн хагас, тайлбар хоосон тоонуудыг хаяна."""
+    """Page numbers, мөрийн дугаар, date-ийн хагас, тайлбар хоосон тоонуудыг хаяна.
+
+    Sanity check: 1 тэрбумаас дээш дүнтэй "гүйлгээ" нь бараг үргэлж дансны дугаарыг
+    decimal-тэйгээр (5,876,157,584.00) parse хийж буруу таасан алдаа.
+    """
     cleaned: List[ParsedTransaction] = []
     for t in transactions:
-        if t.amount < MIN_TX_AMOUNT:
+        if t.amount < MIN_TX_AMOUNT or t.amount > MAX_TX_AMOUNT:
             continue
         desc = (t.description or "").strip()
         # Тайлбар нь зөвхөн тоо/огноо/хоосон бол алгасна
@@ -864,8 +875,9 @@ async def parse_statement(file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    bank_hint: Optional[str] = None
     if name.endswith(".pdf"):
-        text, txs = parse_pdf(content)
+        text, txs, bank_hint = parse_pdf(content)
     elif name.endswith(".xlsx") or name.endswith(".xls"):
         ext = ".xlsx" if name.endswith(".xlsx") else ".xls"
         text, txs = parse_excel(content, ext)
@@ -874,7 +886,9 @@ async def parse_statement(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Зөвхөн PDF, Excel, CSV дэмжинэ")
 
-    bank_name = detect_bank(text or "")
+    # PDF banner glyph (жнь "ХААН БАНК" bold font-той учир `nnnn`-р гарч ирэх)
+    # detect_bank-аар таних боломжгүй. Parser-ийн тодорхойлсон bank_hint-ийг урьтал.
+    bank_name = bank_hint or detect_bank(text or "")
     txs = filter_noise(txs)
 
     # Эхлээд гүйлгээний нийлбэрээр тооцно...
