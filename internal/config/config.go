@@ -14,8 +14,6 @@ type Config struct {
 	DBName     string
 	JWTSecret  string
 	Port       string
-	AIAPIKey   string
-	AIModel    string
 	GoogleIOSClientID string
 	GoogleWebClientID string
 	FacebookAppID     string
@@ -35,10 +33,6 @@ func Load() *Config {
 		DBName:     getEnv("DB_NAME", "fintrack"),
 		JWTSecret:  getEnv("JWT_SECRET", "fintrack-secret-key-change-in-production"),
 		Port:       getEnv("PORT", DefaultPort),
-		AIAPIKey:   getFirstEnv("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
-		// Анхаар: gemini-2.0-flash нь зарим free key-ийн project-д quota=0
-		// байдаг тул gemini-2.5-flash-ийг default болгосон.
-		AIModel: getEnv("AI_MODEL", "gemini-2.5-flash"),
 		GoogleIOSClientID: getEnv("GOOGLE_IOS_CLIENT_ID", ""),
 		GoogleWebClientID: getEnv("GOOGLE_WEB_CLIENT_ID", ""),
 		FacebookAppID:     getEnv("FACEBOOK_APP_ID", ""),

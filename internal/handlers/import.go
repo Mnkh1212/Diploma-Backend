@@ -15,10 +15,8 @@ import (
 	"fintrack-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/generative-ai-go/genai"
 	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
-	"google.golang.org/api/option"
 	"gorm.io/gorm"
 )
 
@@ -134,26 +132,14 @@ func parsePDF(path string) string {
 }
 
 func (h *ImportHandler) analyzeWithAI(rawText string, userID uint) string {
-	if h.Cfg.AIAPIKey == "" {
-		return h.basicAnalysis(rawText)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
-	if err != nil {
-		log.Printf("gemini client init failed in import: %v", err)
-		return h.basicAnalysis(rawText)
-	}
-	defer client.Close()
-
-	// Хэрэглэгчийн одоогийн санхүүгийн мэдээлэл
 	var totalBalance float64
 	h.DB.Model(&models.Account{}).Where("user_id = ?", userID).
 		Select("COALESCE(SUM(balance), 0)").Scan(&totalBalance)
 
-	model := client.GenerativeModel(h.Cfg.AIModel)
-	model.SystemInstruction = genai.NewUserContent(genai.Text(
-		`Та Монголын банкны гүйлгээний хуулга анализ хийж байна. Монгол хэлээр хариулна.
+	systemPrompt := `Та Монголын банкны гүйлгээний хуулга анализ хийж байна. Монгол хэлээр хариулна.
 
 Дараах зүйлсийг тодорхойлно уу:
 1. 📊 Нийт орлого болон зарлагын дүн
@@ -163,9 +149,8 @@ func (h *ImportHandler) analyzeWithAI(rawText string, userID uint) string {
 5. 💡 Хэмнэлтийн зөвлөмж (яг тоон дүнтэйгээр)
 6. 🎯 Төсөвлөлтийн санал (ангилал тус бүрээр)
 
-Мөнгөн дүнг ₮ тэмдэгтэйгээр, таслалтай бичнэ. Товч, тодорхой бай.`))
+Мөнгөн дүнг ₮ тэмдэгтэйгээр, таслалтай бичнэ. Товч, тодорхой бай.`
 
-	// Текстийг хэт урт бол товчлох
 	text := rawText
 	if len(text) > 15000 {
 		text = text[:15000] + "\n...(хасагдсан)"
@@ -173,16 +158,12 @@ func (h *ImportHandler) analyzeWithAI(rawText string, userID uint) string {
 
 	prompt := fmt.Sprintf("Банкны гүйлгээний хуулга:\n\n%s\n\nХэрэглэгчийн одоогийн нийт үлдэгдэл: %.0f₮", text, totalBalance)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	resp, err := callAI(ctx, systemPrompt, nil, prompt)
 	if err != nil {
-		log.Printf("gemini generate content failed in import for model %s: %v", h.Cfg.AIModel, err)
+		log.Printf("AI analyze import failed: %v", err)
 		return h.basicAnalysis(rawText)
 	}
-
-	if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-		return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
-	}
-	return h.basicAnalysis(rawText)
+	return resp
 }
 
 func (h *ImportHandler) basicAnalysis(rawText string) string {
@@ -193,5 +174,5 @@ func (h *ImportHandler) basicAnalysis(rawText string) string {
 			lineCount++
 		}
 	}
-	return fmt.Sprintf("📊 Файлаас %d мөр мэдээлэл уншигдлаа.\n\n💡 AI анализ хийхийн тулд backend орчинд `AI_API_KEY`, `GEMINI_API_KEY`, эсвэл `GOOGLE_API_KEY`-ийн аль нэгийг тохируулна уу.", lineCount)
+	return fmt.Sprintf("📊 Файлаас %d мөр мэдээлэл уншигдлаа.\n\n💡 AI анализ хийхэд алдаа гарлаа. Дараа дахин оролдоно уу.", lineCount)
 }
