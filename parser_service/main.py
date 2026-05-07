@@ -202,12 +202,21 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction], Optional[st
         if khan_txs:
             return text, khan_txs, "Khan Bank"
 
+    # Голомт банк — хүснэгт format-тай (ОГНОО | АМ FC | АМ MNT | ТӨРӨЛ | УТГА).
+    # Цахим гарын үсэгтэй PDF дээр extract_text нь баганыг хольж унших тохиолдол гардаг
+    # тул table extraction-ыг урьтал ашиглана; үгүй бол Mongolian text parser fallback.
+    is_golomt = "голомт" in low or "golomt" in low
+    if is_golomt:
+        g_txs = parse_golomt_format(content, text)
+        if g_txs:
+            return text, g_txs, "Golomt Bank"
+
     # Mongolian bank format-ыг шалгана. Хэрэв "ОРЛОГО" / "ЗАРЛАГА" cyrillic
     # keyword-ууд ихтэй бол Mongolian parser ашиглана — ингэснээр илүү нарийн.
     if upper.count("ОРЛОГО") + upper.count("ЗАРЛАГА") >= 4:
         txs = parse_mongolian_format(text)
         if txs:
-            return text, txs, None
+            return text, txs, "Golomt Bank" if is_golomt else None
 
     # Generic table extraction
     txs: List[ParsedTransaction] = []
@@ -414,6 +423,195 @@ def _parse_khan_text(text: str) -> List[ParsedTransaction]:
     return txs
 
 
+# ===================== Golomt parser =====================
+
+# Golomt-ийн жинхэнэ гүйлгээний мөр: "<amount> ОРЛОГО|ЗАРЛАГА <description>"
+# (амжилт нь "ӨДРИЙН"-ээр эхэлдэггүй ба "НИЙТ"-ээс өмнө биш).
+GOLOMT_TX_RE = re.compile(
+    r"^\s*([\d,'\s]+\.\d{1,2})\s+(ОРЛОГО|ЗАРЛАГА)\s+(.+?)$"
+)
+GOLOMT_DATE_ONLY_RE = re.compile(r"^\s*(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s*$")
+GOLOMT_SKIP_TOKENS = (
+    "ӨДРИЙН ОРЛОГО",
+    "ӨДРИЙН ЗАРЛАГА",
+    "ӨДРИЙН ҮЛДЭГДЭЛ",
+    "ЭХНИЙ ҮЛДЭГДЭЛ",
+    "ЭЦСИЙН ҮЛДЭГДЭЛ",
+    "НИЙТ ОРЛОГО",
+    "НИЙТ ЗАРЛАГА",
+    "НИЙТ КРЕДИТ",
+    "НИЙТ ДЕБИТ",
+)
+
+
+def parse_golomt_format(content: bytes, text: str) -> List[ParsedTransaction]:
+    """Голомт банкны хуулга — хоёр шаттай parser.
+
+    1. pdfplumber.extract_tables-аар хүснэгт уншиж нарийн ажиллах эсэхийг үзнэ.
+       Хүснэгтийн багана: ОГНОО | ВАЛЮТ FC | MNT | ТӨРӨЛ | ГҮЙЛГЭЭНИЙ УТГА.
+    2. Хүснэгтээс гүйлгээ олдоогүй бол text-ийг мөр-мөрөөр уншиж "AMOUNT ОРЛОГО|ЗАРЛАГА DESC"
+       хэв загвартай мөрийг л зөвшөөрнө. Энэ нь pdfplumber-ийн extract_text-ээс
+       багана хольж бичсэн алдааг шүүж хаяна.
+    """
+    table_txs = _parse_golomt_tables(content)
+    text_txs = _parse_golomt_text(text)
+    # Илүү олон бөгөөд "Бусад"-аас өөр ангилалтай гарсан тал руу нь сонгоно.
+    if len(table_txs) >= len(text_txs) and table_txs:
+        return table_txs
+    return text_txs
+
+
+def _parse_golomt_tables(content: bytes) -> List[ParsedTransaction]:
+    txs: List[ParsedTransaction] = []
+    current_date = ""
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables() or []:
+                    if not table:
+                        continue
+                    for row in table:
+                        if not row:
+                            continue
+                        cells = [str(c or "").strip() for c in row]
+                        if not any(cells):
+                            continue
+                        joined = " ".join(cells).upper()
+
+                        # Огноо ганцаараа байгаа мөр
+                        for c in cells:
+                            m = GOLOMT_DATE_ONLY_RE.match(c)
+                            if m and not any(
+                                u in joined for u in ("ОРЛОГО", "ЗАРЛАГА", "ҮЛДЭГДЭЛ")
+                            ):
+                                current_date = normalize_date(m.group(1))
+                                break
+
+                        # Өдрийн нэгтгэл/нийт мөр — алгасна
+                        if any(skip in joined for skip in GOLOMT_SKIP_TOKENS):
+                            continue
+
+                        # Type cell
+                        tx_type: Optional[str] = None
+                        for c in cells:
+                            up = c.upper().strip()
+                            if up == "ОРЛОГО":
+                                tx_type = "income"
+                                break
+                            if up == "ЗАРЛАГА":
+                                tx_type = "expense"
+                                break
+                        if not tx_type:
+                            continue
+
+                        # Дансны үлдэгдэл биш бодит мөнгөн дүн (decimal-тай, 100M-ээс бага)
+                        amount = 0.0
+                        for c in cells:
+                            v = normalize_amount(c)
+                            if v is None:
+                                continue
+                            av = abs(v)
+                            if 100 <= av <= 100_000_000:
+                                amount = av
+                                break
+                        if amount < 100:
+                            continue
+
+                        # Description — амжилт ба огноо-биш хамгийн урт ячейка
+                        desc = ""
+                        for c in cells:
+                            if not c:
+                                continue
+                            up = c.upper()
+                            if up in ("ОРЛОГО", "ЗАРЛАГА"):
+                                continue
+                            if GOLOMT_DATE_ONLY_RE.match(c):
+                                continue
+                            if normalize_amount(c) is not None:
+                                continue
+                            if len(c) > len(desc):
+                                desc = c
+                        desc = re.sub(r"\s*\(Ханш:[^)]*\)?\s*$", "", desc).strip()
+                        desc = re.sub(r"\s+", " ", desc)[:200] or "—"
+
+                        # Огноог row-оос эсвэл өмнөх мөрнөөс
+                        date_in_row = ""
+                        for c in cells:
+                            m = GOLOMT_DATE_ONLY_RE.match(c)
+                            if m:
+                                date_in_row = normalize_date(m.group(1))
+                                break
+                        date = date_in_row or current_date
+
+                        txs.append(ParsedTransaction(
+                            date=date,
+                            description=desc,
+                            amount=amount,
+                            type=tx_type,
+                            category=classify(desc),
+                        ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("golomt table parse failed: %s", exc)
+    return txs
+
+
+def _parse_golomt_text(text: str) -> List[ParsedTransaction]:
+    txs: List[ParsedTransaction] = []
+    current_date = ""
+    pending: Optional[ParsedTransaction] = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            pending = None
+            continue
+        upper = line.upper()
+
+        # Өдрийн/нийт нэгтгэл — алгасна
+        if any(sk in upper for sk in GOLOMT_SKIP_TOKENS):
+            pending = None
+            continue
+
+        # Огноо ганцаараа
+        m = GOLOMT_DATE_ONLY_RE.match(line)
+        if m:
+            current_date = normalize_date(m.group(1))
+            pending = None
+            continue
+
+        # "AMOUNT ОРЛОГО|ЗАРЛАГА DESC" хэв загварт яг таарсан мөр л
+        m = GOLOMT_TX_RE.match(line)
+        if m:
+            amount = normalize_amount(m.group(1))
+            tx_type = "income" if m.group(2).upper() == "ОРЛОГО" else "expense"
+            desc = m.group(3).strip()
+            desc = re.sub(r"\s*\(Ханш:[^)]*\)?\s*$", "", desc).strip()
+
+            if amount is None or abs(amount) < 100 or abs(amount) > 100_000_000:
+                pending = None
+                continue
+
+            tx = ParsedTransaction(
+                date=current_date,
+                description=desc[:200] or "—",
+                amount=abs(amount),
+                type=tx_type,
+                category=classify(desc),
+            )
+            txs.append(tx)
+            pending = tx
+            continue
+
+        # Multi-line description — өмнөх tx-ийн description-д залгана.
+        # Зөвхөн эхлэлд нь тоо/амжилт байхгүй, бас skip-keyword-гүй мөр л залгана.
+        if pending and not _looks_like_data_row(line):
+            new_desc = (pending.description + " " + line).strip()[:200]
+            pending.description = new_desc
+            pending.category = classify(new_desc)
+
+    return txs
+
+
 # Монгол банкны хуулга-д тааруулсан parser. Голомт зэрэг банкны formats:
 #
 #     2026-01-24
@@ -565,38 +763,50 @@ def extract_summary_amounts(raw: str) -> dict:
     """PDF/Excel-ийн text дотроос 'НИЙТ ОРЛОГО', 'НИЙТ ЗАРЛАГА', 'Эхний/Эцсийн үлдэгдэл'
     гэх мэт мөрнөөс жинхэнэ тоог олж буцаана.
 
-    Зарим банк (Голомт г.м) дүнг keyword-ийн өмнө бичдэг ("4,662,900.00 НИЙТ ОРЛОГО"),
-    зарим нь араас. Тиймээс хоёр талыг шалгана.
+    Багана хольж бичдэг банкуудын алдаанаас сэргийлэхийн тулд:
+      - Зөвхөн keyword-той ИЖИЛ мөрөн дэх amount-ыг авна
+      - Сүүлээс эхлэн (footer) скан хийнэ — НИЙТ ОРЛОГО/ЗАРЛАГА ихэвчлэн доор байдаг
+      - Голомт стиль: "4,662,900.00 НИЙТ ОРЛОГО" (amount урьдчилан бичигдсэн)
+        / Бусад: "ENDING BALANCE: 100.00" (amount хойноос)
     """
     out: dict = {}
     if not raw:
         return out
-    low = raw.lower()
+    lines = raw.splitlines()
+
     for key, patterns in SUMMARY_PATTERNS:
-        for pat in patterns:
-            for m in re.finditer(pat, low):
-                # Эхний оролдлого: keyword-ийн өмнө 200 тэмдэгт (Голомт стиль)
-                head_start = max(0, m.start() - 200)
-                head = raw[head_start:m.start()]
-                head_amounts = AMOUNT_RE.findall(head)
-                for a in reversed(head_amounts):
-                    v = normalize_amount(a)
-                    if v is not None and abs(v) >= 100:
-                        out[key] = abs(v)
-                        break
-                if key in out:
+        for line in reversed(lines):
+            low_line = line.lower()
+            matched = None
+            for pat in patterns:
+                m = re.search(pat, low_line)
+                if m:
+                    matched = m
                     break
-                # Хэрэв олдоогүй бол keyword-ийн араас үзнэ
-                tail = raw[m.end(): m.end() + 200]
-                tail_amounts = AMOUNT_RE.findall(tail)
-                for a in tail_amounts:
-                    v = normalize_amount(a)
-                    if v is not None and abs(v) >= 100:
-                        out[key] = abs(v)
-                        break
-                if key in out:
+            if not matched:
+                continue
+
+            head = line[: matched.start()]
+            tail = line[matched.end():]
+            picked: Optional[float] = None
+
+            # Голомт стиль: amount keyword-ийн өмнө
+            for a in reversed(AMOUNT_RE.findall(head)):
+                v = normalize_amount(a)
+                if v is not None and 100 <= abs(v) <= 1_000_000_000:
+                    picked = abs(v)
                     break
-            if key in out:
+
+            # Эсвэл хойноос
+            if picked is None:
+                for a in AMOUNT_RE.findall(tail):
+                    v = normalize_amount(a)
+                    if v is not None and 100 <= abs(v) <= 1_000_000_000:
+                        picked = abs(v)
+                        break
+
+            if picked is not None:
+                out[key] = picked
                 break
     return out
 
@@ -776,14 +986,16 @@ def line_to_tx(line: str) -> Optional[ParsedTransaction]:
 
 
 MIN_TX_AMOUNT = 100.0  # 100₮-өөс бага noise-уудыг хаяна
-MAX_TX_AMOUNT = 1_000_000_000.0  # 1 тэрбумаас дээш — дансны дугаар/parser алдаа
+MAX_TX_AMOUNT = 100_000_000.0  # 100 саяаас дээш — данс дугаар / parser алдаа гэж үзнэ
+MAX_TOTAL_AMOUNT = 1_000_000_000.0  # Нэгтгэл дүн (нийт орлого/зарлага) хязгаар
 
 
 def filter_noise(transactions: List[ParsedTransaction]) -> List[ParsedTransaction]:
     """Page numbers, мөрийн дугаар, date-ийн хагас, тайлбар хоосон тоонуудыг хаяна.
 
-    Sanity check: 1 тэрбумаас дээш дүнтэй "гүйлгээ" нь бараг үргэлж дансны дугаарыг
-    decimal-тэйгээр (5,876,157,584.00) parse хийж буруу таасан алдаа.
+    Sanity check: 100 саяаас дээш дүнтэй "гүйлгээ" нь хувийн дансанд бараг үргэлж
+    данс дугаарыг decimal-тэйгээр (5,876,157,584.00) parse хийж буруу таасан алдаа.
+    Хэрэв legitimate бизнес дансны хуулга бол энэ хязгаарыг өөрчилнө.
     """
     cleaned: List[ParsedTransaction] = []
     for t in transactions:
