@@ -45,16 +45,18 @@ func Load() *Config {
 		// байдаг тул gemini-2.5-flash-ийг default болгосон.
 		AIModel:          getEnv("AI_MODEL", "gemini-2.5-flash"),
 		OpenRouterAPIKey: getEnv("OPENROUTER_API_KEY", ""),
-		// Comma-separated моделийн жагсаалт. Эхнийх rate-limited (429) эсвэл
-		// 5xx буцаавал дараагийнх руу автоматаар шилжинэ. Үнэгүй моделүүд нь
-		// upstream-д ачаалал ихсэхэд rate-limited орох нь түгээмэл тул олон
-		// fallback байх нь чухал. Бүгд монгол хэл дэмжинэ.
+		// Comma-separated моделийн жагсаалт. Эхнийх 429/5xx/404 буцаавал
+		// дараагийнх руу автоматаар шилжинэ. OpenRouter free моделүүд нь
+		// тогтмол солигддог тул фолбэк олон байх нь чухал. Хэрэв бүгд fail
+		// хийвэл OPENROUTER_MODEL env-д https://openrouter.ai/models?max_price=0
+		// дээрээс одоо ажиллаж буй моделийн нэрийг шалгаж тохируулах.
 		OpenRouterModel: getEnv("OPENROUTER_MODEL",
-			"deepseek/deepseek-chat-v3.1:free,"+
-				"meta-llama/llama-3.3-70b-instruct:free,"+
+			"meta-llama/llama-3.3-70b-instruct:free,"+
 				"qwen/qwen-2.5-72b-instruct:free,"+
 				"google/gemma-2-9b-it:free,"+
-				"mistralai/mistral-7b-instruct:free"),
+				"mistralai/mistral-7b-instruct:free,"+
+				"meta-llama/llama-3.2-3b-instruct:free,"+
+				"deepseek/deepseek-chat:free"),
 		GoogleIOSClientID: getEnv("GOOGLE_IOS_CLIENT_ID", ""),
 		GoogleWebClientID: getEnv("GOOGLE_WEB_CLIENT_ID", ""),
 		FacebookAppID:     getEnv("FACEBOOK_APP_ID", ""),

@@ -153,14 +153,23 @@ func splitModels(s string) []string {
 	return out
 }
 
-// shouldRotateModel - rate limit (429), upstream rate-limit, эсвэл 5xx алдаа
-// гарвал жагсаалтын дараагийн модель руу шилжинэ. 401/403/404/400 — fundamental
-// алдаа учраас өөр модель туршихаас нэмэргүй.
+// shouldRotateModel - rate limit (429), upstream rate-limit, 5xx, эсвэл
+// 404 (тухайн model OpenRouter-аас алга) тохиолдолд жагсаалтын дараагийн
+// модель руу шилжинэ. 401/403 (auth) — permanent тул rotation хийхгүй.
+//
+// 404-ийг rotation-д хамруулсан шалтгаан: OpenRouter free models нь тогтмол
+// солигддог, нэг моделийн нэр буруу/устсан байсан ч бусад моделүүд ажиллах
+// боломжтой.
 func shouldRotateModel(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	// Auth алдаа — бүх моделд адил fail хийнэ. Rotation хэрэггүй.
+	if strings.Contains(msg, "401") || strings.Contains(msg, "403") ||
+		strings.Contains(msg, "unauthorized") || strings.Contains(msg, "forbidden") {
+		return false
+	}
 	return strings.Contains(msg, "429") ||
 		strings.Contains(msg, "rate-limited") ||
 		strings.Contains(msg, "rate limit") ||
@@ -169,7 +178,10 @@ func shouldRotateModel(err error) bool {
 		strings.Contains(msg, "502") ||
 		strings.Contains(msg, "504") ||
 		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "unavailable")
+		strings.Contains(msg, "unavailable") ||
+		strings.Contains(msg, "404") ||
+		strings.Contains(msg, "no endpoints found") ||
+		strings.Contains(msg, "not found")
 }
 
 // isGeoBlockError - Gemini-ийн "User location is not supported" гэх мэт
@@ -227,8 +239,8 @@ func formatMultiProviderError(geminiErr, orErr error) string {
 		switch {
 		case strings.Contains(orMsg, "401"), strings.Contains(orMsg, "unauthorized"):
 			b.WriteString("• OPENROUTER_API_KEY буруу. https://openrouter.ai/keys → шинэ key үүсгэх\n")
-		case strings.Contains(orMsg, "404"), strings.Contains(orMsg, "model"), strings.Contains(orMsg, "not found"):
-			b.WriteString("• OPENROUTER_MODEL буруу. Render env-д `google/gemini-2.0-flash-exp:free` гэж тохируулах\n")
+		case strings.Contains(orMsg, "404"), strings.Contains(orMsg, "no endpoints found"), strings.Contains(orMsg, "not found"):
+			b.WriteString("• Бүх жагсаасан модель OpenRouter-аас алга байна. https://openrouter.ai/models?max_price=0 ороод одоо free моделийн нэрийг шалгаад OPENROUTER_MODEL env-д тохируулах\n")
 		case strings.Contains(orMsg, "402"), strings.Contains(orMsg, "credit"), strings.Contains(orMsg, "balance"), strings.Contains(orMsg, "payment"):
 			b.WriteString("• OpenRouter дансанд credit нэмэх эсвэл `:free` модел сонгох\n")
 		case strings.Contains(orMsg, "429"), strings.Contains(orMsg, "rate"), strings.Contains(orMsg, "rate-limited"):
