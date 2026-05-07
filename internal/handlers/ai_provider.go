@@ -10,11 +10,88 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"fintrack-backend/internal/config"
 )
+
+// ===================== OpenRouter моделийн жагсаалт автомат татах =====================
+//
+// OpenRouter-ын free моделүүдийн нэр тогтмол солигддог (deepseek-chat-v3.1:free
+// → deepseek-chat:free → ...). Статик жагсаалт хадгалах нь үргэлж хуучирдаг тул
+// /api/v1/models endpoint-ээс одоогийн free моделийг автоматаар татна.
+// Үр дүнг 1 цагт нэг л дахин шинэчилнэ.
+
+type orModelInfo struct {
+	ID      string `json:"id"`
+	Pricing struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
+	} `json:"pricing"`
+}
+
+type orModelsResponse struct {
+	Data []orModelInfo `json:"data"`
+}
+
+var (
+	freeModelsCache   []string
+	freeModelsCacheAt time.Time
+	freeModelsMu      sync.Mutex
+)
+
+// fetchOpenRouterFreeModels - OpenRouter-аас одоо ажиллаж буй free
+// (prompt+completion price = 0) моделүүдийн нэрийг татна.
+func fetchOpenRouterFreeModels(ctx context.Context, cfg *config.Config) ([]string, error) {
+	freeModelsMu.Lock()
+	defer freeModelsMu.Unlock()
+
+	if time.Since(freeModelsCacheAt) < time.Hour && len(freeModelsCache) > 0 {
+		return freeModelsCache, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://openrouter.ai/api/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.OpenRouterAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.OpenRouterAPIKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openrouter models http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed orModelsResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+
+	var free []string
+	for _, m := range parsed.Data {
+		// OpenRouter-ын pricing нь string ("0", "0.00000015" г.м.). Бүгд "0" бол free.
+		if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
+			free = append(free, m.ID)
+		}
+	}
+	if len(free) == 0 {
+		return nil, errors.New("no free models found")
+	}
+
+	freeModelsCache = free
+	freeModelsCacheAt = time.Now()
+	log.Printf("openrouter: fetched %d free models", len(free))
+	return free, nil
+}
 
 // sanitizeUTF8 - PDF parser-аас орж ирсэн invalid byte sequences-ыг арилгана.
 // Gemini protobuf нь invalid UTF-8 текстэд "Part.text contains invalid UTF-8"
@@ -66,10 +143,7 @@ func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string
 		return "", errors.New("OPENROUTER_API_KEY not configured")
 	}
 
-	models := splitModels(cfg.OpenRouterModel)
-	if len(models) == 0 {
-		return "", errors.New("OPENROUTER_MODEL not configured")
-	}
+	configured := splitModels(cfg.OpenRouterModel)
 
 	messages := make([]orMessage, 0, len(history)+2)
 	if systemPrompt != "" {
@@ -80,19 +154,55 @@ func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string
 	}
 	messages = append(messages, orMessage{Role: "user", Content: sanitizeUTF8(userMessage)})
 
+	// 1. Эхлээд тохируулсан моделийг туршина
 	var lastErr error
-	for _, model := range models {
-		log.Printf("openrouter: trying model=%s", model)
+	tried := make(map[string]bool)
+	for _, model := range configured {
+		if tried[model] {
+			continue
+		}
+		tried[model] = true
+		log.Printf("openrouter: trying configured model=%s", model)
 		content, err := callOpenRouterModel(ctx, cfg, model, messages)
 		if err == nil {
 			return content, nil
 		}
 		lastErr = err
 		if !shouldRotateModel(err) {
-			// Permanent error (auth, payload, etc.) — өөр модель туршихаас нэмэргүй
 			return "", err
 		}
-		log.Printf("openrouter: model=%s rotated due to: %v", model, err)
+	}
+
+	// 2. Бүх тохируулсан модель fail хийсэн — OpenRouter-аас одоо ажиллаж буй
+	// free моделийг автоматаар татаж туршина.
+	log.Printf("openrouter: all configured models failed, fetching free model list")
+	fetched, fetchErr := fetchOpenRouterFreeModels(ctx, cfg)
+	if fetchErr != nil {
+		log.Printf("openrouter: free models fetch failed: %v", fetchErr)
+		if lastErr != nil {
+			return "", lastErr
+		}
+		return "", fetchErr
+	}
+
+	for _, model := range fetched {
+		if tried[model] {
+			continue
+		}
+		tried[model] = true
+		log.Printf("openrouter: trying fetched model=%s", model)
+		content, err := callOpenRouterModel(ctx, cfg, model, messages)
+		if err == nil {
+			return content, nil
+		}
+		lastErr = err
+		if !shouldRotateModel(err) {
+			return "", err
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("no working OpenRouter models")
 	}
 	return "", lastErr
 }
