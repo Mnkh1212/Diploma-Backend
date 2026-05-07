@@ -1,0 +1,19 @@
+[
+  { "name": "Хоол", "icon": "restaurant", "color": "#FF6B6B", "type": "expense" },
+  { "name": "Дэлгүүр", "icon": "cart", "color": "#4ECDC4", "type": "expense" },
+  { "name": "Тээвэр", "icon": "car", "color": "#45B7D1", "type": "expense" },
+  { "name": "Хүнсний бараа", "icon": "basket", "color": "#96CEB4", "type": "expense" },
+  { "name": "Эрүүл мэнд", "icon": "medical", "color": "#FFEAA7", "type": "expense" },
+  { "name": "Аялал", "icon": "airplane", "color": "#DDA0DD", "type": "expense" },
+  { "name": "Такси", "icon": "car-sport", "color": "#F39C12", "type": "expense" },
+  { "name": "Орон сууц", "icon": "home", "color": "#E74C3C", "type": "expense" },
+  { "name": "Даатгал", "icon": "shield", "color": "#3498DB", "type": "expense" },
+  { "name": "Интернет", "icon": "wifi", "color": "#9B59B6", "type": "expense" },
+  { "name": "Зугаа цэнгэл", "icon": "game-controller", "color": "#E056A0", "type": "expense" },
+  { "name": "Боловсрол", "icon": "school", "color": "#00B894", "type": "expense" },
+  { "name": "Цалин", "icon": "cash", "color": "#00B894", "type": "income" },
+  { "name": "Фрийланс", "icon": "laptop", "color": "#6C5CE7", "type": "income" },
+  { "name": "Хөрөнгө оруулалт", "icon": "trending-up", "color": "#FDCB6E", "type": "income" },
+  { "name": "Шилжүүлэг", "icon": "swap-horizontal", "color": "#74B9FF", "type": "income" },
+  { "name": "Бусад орлого", "icon": "add-circle", "color": "#A29BFE", "type": "income" }
+]
