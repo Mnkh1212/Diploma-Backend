@@ -20,48 +20,77 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 
 func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	now := time.Now()
-	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	startOfLastMonth := startOfMonth.AddDate(0, -1, 0)
 
-	// Total balance across all accounts
+	// account_id query параметр байвал тухайн данс л хэргэлнэ.
+	// Үгүй бол бүх данс дээгүүр нэгтгэнэ.
+	accountIDStr := c.Query("account_id")
+	var accountID uint
+	if accountIDStr != "" {
+		if v, err := strconv.ParseUint(accountIDStr, 10, 64); err == nil {
+			accountID = uint(v)
+		}
+	}
+
+	// Бүх данс — switcher-д үргэлж бүгдийг буцаана
 	var accounts []models.Account
-	h.DB.Where("user_id = ?", userID).Find(&accounts)
+	h.DB.Where("user_id = ?", userID).Order("id ASC").Find(&accounts)
 
 	var totalBalance float64
-	for _, a := range accounts {
-		totalBalance += a.Balance
+	if accountID > 0 {
+		for _, a := range accounts {
+			if a.ID == accountID {
+				totalBalance = a.Balance
+				break
+			}
+		}
+	} else {
+		for _, a := range accounts {
+			totalBalance += a.Balance
+		}
 	}
 
-	// Current month income/expenses
-	var totalIncome, totalExpenses float64
-	h.DB.Model(&models.Transaction{}).
-		Where("user_id = ? AND type = ? AND date >= ?", userID, "income", startOfMonth).
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalIncome)
-
-	h.DB.Model(&models.Transaction{}).
-		Where("user_id = ? AND type = ? AND date >= ?", userID, "expense", startOfMonth).
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalExpenses)
-
-	// Last month expenses for comparison
-	var lastMonthExpenses float64
-	h.DB.Model(&models.Transaction{}).
-		Where("user_id = ? AND type = ? AND date >= ? AND date < ?", userID, "expense", startOfLastMonth, startOfMonth).
-		Select("COALESCE(SUM(amount), 0)").Scan(&lastMonthExpenses)
+	// Account-аар шүүх үед хуулгаас орсон хуучин огноотой гүйлгээ ч харагдах
+	// шаардлагатай тул бүх хугацааны нийлбэрийг авна. Үгүй бол одоогийн сар.
+	incomeQ := h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND type = ?", userID, "income")
+	expenseQ := h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND type = ?", userID, "expense")
+	recentQ := h.DB.Preload("Category").Preload("Account").
+		Where("user_id = ?", userID)
 
 	var savingsPercent, savingsAmount float64
-	if lastMonthExpenses > 0 {
-		savingsAmount = lastMonthExpenses - totalExpenses
-		savingsPercent = (savingsAmount / lastMonthExpenses) * 100
+
+	if accountID > 0 {
+		incomeQ = incomeQ.Where("account_id = ?", accountID)
+		expenseQ = expenseQ.Where("account_id = ?", accountID)
+		recentQ = recentQ.Where("account_id = ?", accountID)
+	} else {
+		now := time.Now()
+		startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		startOfLastMonth := startOfMonth.AddDate(0, -1, 0)
+		incomeQ = incomeQ.Where("date >= ?", startOfMonth)
+		expenseQ = expenseQ.Where("date >= ?", startOfMonth)
+
+		// Өмнөх сартай харьцуулалт зөвхөн "бүгд" view дээр л хэрэгтэй
+		var lastMonthExpenses, currentMonthExpenses float64
+		h.DB.Model(&models.Transaction{}).
+			Where("user_id = ? AND type = ? AND date >= ? AND date < ?", userID, "expense", startOfLastMonth, startOfMonth).
+			Select("COALESCE(SUM(amount), 0)").Scan(&lastMonthExpenses)
+		h.DB.Model(&models.Transaction{}).
+			Where("user_id = ? AND type = ? AND date >= ?", userID, "expense", startOfMonth).
+			Select("COALESCE(SUM(amount), 0)").Scan(&currentMonthExpenses)
+		if lastMonthExpenses > 0 {
+			savingsAmount = lastMonthExpenses - currentMonthExpenses
+			savingsPercent = (savingsAmount / lastMonthExpenses) * 100
+		}
 	}
 
-	// Recent transactions
+	var totalIncome, totalExpenses float64
+	incomeQ.Select("COALESCE(SUM(amount), 0)").Scan(&totalIncome)
+	expenseQ.Select("COALESCE(SUM(amount), 0)").Scan(&totalExpenses)
+
 	var recentTx []models.Transaction
-	h.DB.Preload("Category").Preload("Account").
-		Where("user_id = ?", userID).
-		Order("date DESC, created_at DESC").
-		Limit(10).
-		Find(&recentTx)
+	recentQ.Order("date DESC, created_at DESC").Limit(10).Find(&recentTx)
 
 	c.JSON(http.StatusOK, models.DashboardResponse{
 		Balance:            totalBalance,

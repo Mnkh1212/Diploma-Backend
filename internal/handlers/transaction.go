@@ -82,6 +82,7 @@ func (h *TransactionHandler) List(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	txType := c.Query("type")
 	search := c.Query("search")
+	accountID := c.Query("account_id")
 
 	offset := (page - 1) * limit
 
@@ -92,6 +93,9 @@ func (h *TransactionHandler) List(c *gin.Context) {
 	}
 	if search != "" {
 		query = query.Where("description ILIKE ?", "%"+search+"%")
+	}
+	if accountID != "" {
+		query = query.Where("account_id = ?", accountID)
 	}
 
 	var total int64

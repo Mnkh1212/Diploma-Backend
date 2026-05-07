@@ -1093,21 +1093,16 @@ Schema:
 	}
 
 	raw := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
-	raw = strings.TrimSpace(raw)
-	// Gemini заримдаа ```json ... ``` буцаадаг
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
+	jsonStr := extractJSONObject(raw)
 
 	var parsedAI struct {
 		Summary         string   `json:"summary"`
 		Recommendations []string `json:"recommendations"`
 	}
-	if err := json.Unmarshal([]byte(raw), &parsedAI); err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &parsedAI); err != nil {
 		log.Printf("gemini analysis JSON parse failed: %v\nraw=%s", err, raw)
-		// JSON болохгүй бол raw-ийг summary болгоё
-		return raw, ruleBasedRecommendations(parsed)
+		// JSON болохгүй бол rule-based-руу буцна (raw markdown харуулахаас сэргийлнэ)
+		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
 	}
 	if parsedAI.Summary == "" {
 		parsedAI.Summary = ruleBasedSummary(parsed)
@@ -1116,6 +1111,57 @@ Schema:
 		parsedAI.Recommendations = ruleBasedRecommendations(parsed)
 	}
 	return parsedAI.Summary, parsedAI.Recommendations
+}
+
+// extractJSONObject - LLM-ийн хариунаас эхний бүтэн {...} JSON блокийг олж буцаана.
+// Markdown ```json ... ```, тайлбар текст, бусад зүйлсийг арилгана.
+// Хэрэв олдохгүй бол raw-ийг trimmed хэлбэрээр буцаана.
+func extractJSONObject(raw string) string {
+	s := strings.TrimSpace(raw)
+	// ```json ... ``` блокийг арилгана
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```JSON")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSpace(s)
+
+	// Эхний '{' болон түүнтэй харгалзах '}'-ийг олно (string literal-ийг тооцно)
+	start := strings.Index(s, "{")
+	if start < 0 {
+		return s
+	}
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return s
 }
 
 func buildAnalysisPrompt(p *models.ParsedStatement) string {
@@ -1182,8 +1228,30 @@ func ruleBasedRecommendations(p *models.ParsedStatement) []string {
 
 // parseExcel/parsePDF re-used from import.go (same package)
 
+// bankDisplayInfo - banks-ийн Монгол нэр, icon, өнгийг буцаана.
+// Account-ийн нэр нь UI дээр харагдах учраас Монгол хэлээр буцаана.
+func bankDisplayInfo(bankName string) (string, string, string) {
+	switch bankName {
+	case "Khan Bank":
+		return "Хаан банк", "wallet", "#00A859"
+	case "Golomt Bank":
+		return "Голомт банк", "wallet", "#E30613"
+	case "TDB":
+		return "ХХБ", "wallet", "#003DA5"
+	case "Khas Bank":
+		return "Хас банк", "wallet", "#F58220"
+	case "State Bank":
+		return "Төрийн банк", "wallet", "#1D4F91"
+	case "", "Unknown Bank":
+		return "Импорт хийсэн данс", "wallet", "#00C853"
+	default:
+		return bankName, "wallet", "#00C853"
+	}
+}
+
 // importParsedAsTransactions - parsed гүйлгээнүүдийг хэрэглэгчийн `transactions`
-// table-д бодит record болгож хадгална. Эзэмшигч account-ыг автомат олно.
+// table-д бодит record болгож хадгална. Хуулга бүрд тухайн банкны нэрээр
+// тусдаа account үүсгэнэ (хэрэв байхгүй бол), байгаа бол түүн рүү нэмнэ.
 //
 // Дараах нөхцөлүүдэд гүйлгээг алгасна:
 //   - Amount < 100 (parser noise)
@@ -1192,23 +1260,29 @@ func ruleBasedRecommendations(p *models.ParsedStatement) []string {
 //
 // Account.Balance-ийг (income - expense)-ээр шинэчилнэ.
 func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *models.ParsedStatement) (int, error) {
-	// 1. Зорилтот данс — анхны эзэмшигч данс. Үгүй бол шинэ "Bank (auto)" үүсгэнэ.
+	// 1. Bank-specific data — Mongolian display name + icon + color
+	displayName, icon, color := bankDisplayInfo(parsed.BankName)
+
+	// 2. Тухайн банкны нэрээр account олох; үгүй бол шинээр үүсгэх
 	var account models.Account
-	err := h.DB.Where("user_id = ?", userID).Order("id ASC").First(&account).Error
+	err := h.DB.Where("user_id = ? AND name = ?", userID, displayName).First(&account).Error
 	if err != nil {
 		account = models.Account{
 			UserID: userID,
-			Name:   parsed.BankName,
+			Name:   displayName,
 			Type:   "bank",
-			Icon:   "wallet",
-			Color:  "#00C853",
-		}
-		if account.Name == "" || account.Name == "Unknown Bank" {
-			account.Name = "Imported Bank"
+			Icon:   icon,
+			Color:  color,
 		}
 		if err := h.DB.Create(&account).Error; err != nil {
-			return 0, fmt.Errorf("default account create failed: %w", err)
+			return 0, fmt.Errorf("bank account create failed: %w", err)
 		}
+	}
+
+	// 3. Opening balance мэдэгдэж байвал account.Balance-г түүгээр synchronize
+	if parsed.OpeningBalance > 0 && account.Balance == 0 {
+		h.DB.Model(&account).Update("balance", parsed.OpeningBalance)
+		account.Balance = parsed.OpeningBalance
 	}
 
 	// 2. Category map - нэрээр хайх.
