@@ -57,14 +57,18 @@ type orResponse struct {
 }
 
 // callOpenRouter - системийн prompt + чатын түүх + хэрэглэгчийн мессеж бэлтгэн
-// OpenRouter-ийн chat completions endpoint руу илгээж текст хариу авна.
-//
-// systemPrompt: Gemini-ийн SystemInstruction-той дүйцнэ
-// history: өмнөх ярианы мессежүүд (user/assistant дараалсан)
-// userMessage: одоогийн хэрэглэгчийн ярианы мөр
+// OpenRouter-руу илгээнэ. cfg.OpenRouterModel нь "model1,model2,..." comma-
+// separated жагсаалт байж болно — эхнийх rate-limited (429) эсвэл 5xx буцаавал
+// дараагийнх руу шилжинэ. Үнэгүй моделүүд upstream-д ачаалал ихсэх үед энэ нь
+// зайлшгүй шаардлагатай.
 func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string, history []orMessage, userMessage string) (string, error) {
 	if cfg.OpenRouterAPIKey == "" {
 		return "", errors.New("OPENROUTER_API_KEY not configured")
+	}
+
+	models := splitModels(cfg.OpenRouterModel)
+	if len(models) == 0 {
+		return "", errors.New("OPENROUTER_MODEL not configured")
 	}
 
 	messages := make([]orMessage, 0, len(history)+2)
@@ -76,10 +80,25 @@ func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string
 	}
 	messages = append(messages, orMessage{Role: "user", Content: sanitizeUTF8(userMessage)})
 
-	body, err := json.Marshal(orRequest{
-		Model:    cfg.OpenRouterModel,
-		Messages: messages,
-	})
+	var lastErr error
+	for _, model := range models {
+		log.Printf("openrouter: trying model=%s", model)
+		content, err := callOpenRouterModel(ctx, cfg, model, messages)
+		if err == nil {
+			return content, nil
+		}
+		lastErr = err
+		if !shouldRotateModel(err) {
+			// Permanent error (auth, payload, etc.) — өөр модель туршихаас нэмэргүй
+			return "", err
+		}
+		log.Printf("openrouter: model=%s rotated due to: %v", model, err)
+	}
+	return "", lastErr
+}
+
+func callOpenRouterModel(ctx context.Context, cfg *config.Config, model string, messages []orMessage) (string, error) {
+	body, err := json.Marshal(orRequest{Model: model, Messages: messages})
 	if err != nil {
 		return "", err
 	}
@@ -120,6 +139,37 @@ func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string
 		return "", errors.New("openrouter empty content")
 	}
 	return content, nil
+}
+
+func splitModels(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// shouldRotateModel - rate limit (429), upstream rate-limit, эсвэл 5xx алдаа
+// гарвал жагсаалтын дараагийн модель руу шилжинэ. 401/403/404/400 — fundamental
+// алдаа учраас өөр модель туршихаас нэмэргүй.
+func shouldRotateModel(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "rate-limited") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "temporarily") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "502") ||
+		strings.Contains(msg, "504") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "unavailable")
 }
 
 // isGeoBlockError - Gemini-ийн "User location is not supported" гэх мэт
@@ -181,8 +231,9 @@ func formatMultiProviderError(geminiErr, orErr error) string {
 			b.WriteString("• OPENROUTER_MODEL буруу. Render env-д `google/gemini-2.0-flash-exp:free` гэж тохируулах\n")
 		case strings.Contains(orMsg, "402"), strings.Contains(orMsg, "credit"), strings.Contains(orMsg, "balance"), strings.Contains(orMsg, "payment"):
 			b.WriteString("• OpenRouter дансанд credit нэмэх эсвэл `:free` модел сонгох\n")
-		case strings.Contains(orMsg, "429"), strings.Contains(orMsg, "rate"):
-			b.WriteString("• OpenRouter rate limit — хэдэн минут хүлээгээд дахин оролдоорой\n")
+		case strings.Contains(orMsg, "429"), strings.Contains(orMsg, "rate"), strings.Contains(orMsg, "rate-limited"):
+			b.WriteString("• Бүх free моделүүд upstream rate-limit-д орсон. 5-10 минут хүлээгээд дахин оролдоорой\n")
+			b.WriteString("• Эсвэл OpenRouter дансанд $1-5 credit нэмбэл paid (тогтвортой) модель ашиглах боломжтой\n")
 		case strings.Contains(orMsg, "verify"), strings.Contains(orMsg, "verification"):
 			b.WriteString("• OpenRouter free models-д заримдаа phone verification шаарддаг — https://openrouter.ai/settings/privacy\n")
 		default:
