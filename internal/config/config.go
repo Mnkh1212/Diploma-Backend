@@ -45,7 +45,11 @@ func Load() *Config {
 		// байдаг тул gemini-2.5-flash-ийг default болгосон.
 		AIModel:          getEnv("AI_MODEL", "gemini-2.5-flash"),
 		OpenRouterAPIKey: getEnv("OPENROUTER_API_KEY", ""),
-		OpenRouterModel:  getEnv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"),
+		// google/gemini-2.0-flash-exp:free OpenRouter-аас 2026 онд устсан.
+		// Llama 3.3 70B нь монгол хэл дэмждэг, тогтвортой үнэгүй сонголт.
+		// Бусад валид сонголт: deepseek/deepseek-chat-v3.1:free,
+		// qwen/qwen-2.5-72b-instruct:free, google/gemma-2-9b-it:free.
+		OpenRouterModel: getEnv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
 		GoogleIOSClientID: getEnv("GOOGLE_IOS_CLIENT_ID", ""),
 		GoogleWebClientID: getEnv("GOOGLE_WEB_CLIENT_ID", ""),
 		FacebookAppID:     getEnv("FACEBOOK_APP_ID", ""),

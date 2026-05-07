@@ -187,7 +187,7 @@ func (h *AIChatHandler) tryGemini(ctx context.Context, systemPrompt string, prev
 	defer client.Close()
 
 	model := client.GenerativeModel(h.Cfg.AIModel)
-	model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
+	model.SystemInstruction = genai.NewUserContent(genai.Text(sanitizeUTF8(systemPrompt)))
 
 	cs := model.StartChat()
 	for _, msg := range previousMessages {
@@ -197,11 +197,11 @@ func (h *AIChatHandler) tryGemini(ctx context.Context, systemPrompt string, prev
 		}
 		cs.History = append(cs.History, &genai.Content{
 			Role:  role,
-			Parts: []genai.Part{genai.Text(msg.Content)},
+			Parts: []genai.Part{genai.Text(sanitizeUTF8(msg.Content))},
 		})
 	}
 
-	resp, err := cs.SendMessage(ctx, genai.Text(userMessage))
+	resp, err := cs.SendMessage(ctx, genai.Text(sanitizeUTF8(userMessage)))
 	if err != nil {
 		return "", err
 	}

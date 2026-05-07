@@ -1132,9 +1132,9 @@ func (h *AIAnalysisHandler) tryGeminiAnalysis(ctx context.Context, systemPrompt,
 	defer client.Close()
 
 	model := client.GenerativeModel(h.Cfg.AIModel)
-	model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
+	model.SystemInstruction = genai.NewUserContent(genai.Text(sanitizeUTF8(systemPrompt)))
 
-	resp, err := model.GenerateContent(ctx, genai.Text(userPrompt))
+	resp, err := model.GenerateContent(ctx, genai.Text(sanitizeUTF8(userPrompt)))
 	if err != nil {
 		return "", err
 	}

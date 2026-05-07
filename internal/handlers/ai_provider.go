@@ -11,9 +11,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fintrack-backend/internal/config"
 )
+
+// sanitizeUTF8 - PDF parser-аас орж ирсэн invalid byte sequences-ыг арилгана.
+// Gemini protobuf нь invalid UTF-8 текстэд "Part.text contains invalid UTF-8"
+// гэсэн алдаа өгдөг. OpenRouter JSON serialization бас зохицуулна.
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "")
+}
 
 // ===================== OpenRouter (Gemini geo-block-аас гарах fallback) =====================
 //
@@ -58,10 +69,12 @@ func callOpenRouter(ctx context.Context, cfg *config.Config, systemPrompt string
 
 	messages := make([]orMessage, 0, len(history)+2)
 	if systemPrompt != "" {
-		messages = append(messages, orMessage{Role: "system", Content: systemPrompt})
+		messages = append(messages, orMessage{Role: "system", Content: sanitizeUTF8(systemPrompt)})
 	}
-	messages = append(messages, history...)
-	messages = append(messages, orMessage{Role: "user", Content: userMessage})
+	for _, h := range history {
+		messages = append(messages, orMessage{Role: h.Role, Content: sanitizeUTF8(h.Content)})
+	}
+	messages = append(messages, orMessage{Role: "user", Content: sanitizeUTF8(userMessage)})
 
 	body, err := json.Marshal(orRequest{
 		Model:    cfg.OpenRouterModel,
