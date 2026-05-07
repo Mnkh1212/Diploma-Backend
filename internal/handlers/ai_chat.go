@@ -145,26 +145,35 @@ func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, p
 - Товч, ойлгомжтой хариулна
 - Emoji ашиглаж болно`, scopeNote, financialContext, scopeNote)
 
-	// 1. Gemini direct
-	geminiResp, geminiErr := h.tryGemini(ctx, systemPrompt, previousMessages, userMessage)
-	if geminiErr == nil {
-		return geminiResp
-	}
-	log.Printf("gemini failed: %v", geminiErr)
+	var geminiErr, orErr error
 
-	// 2. Geo-block / quota үед OpenRouter руу fallback хийнэ
-	if shouldTryFallback(geminiErr) && h.Cfg.OpenRouterAPIKey != "" {
-		log.Printf("attempting openrouter fallback (model=%s)", h.Cfg.OpenRouterModel)
+	// 1. OpenRouter — Mongolia-ээс ажилладаг. Key байвал primary болгож үзнэ.
+	if h.Cfg.OpenRouterAPIKey != "" {
+		log.Printf("ai_chat: trying openrouter (model=%s)", h.Cfg.OpenRouterModel)
 		orHistory := convertHistoryToOR(previousMessages)
-		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, orHistory, userMessage); orErr == nil {
-			return orResp
-		} else {
-			log.Printf("openrouter fallback failed: %v", orErr)
+		resp, err := callOpenRouter(ctx, h.Cfg, systemPrompt, orHistory, userMessage)
+		if err == nil {
+			return resp
 		}
+		orErr = err
+		log.Printf("ai_chat: openrouter failed: %v", err)
 	}
 
-	// 3. Fallback бүгд fail хийсэн — Gemini-ийн алдааны мессежийг буцаана
-	return formatAIError(geminiErr)
+	// 2. Gemini direct (Render US-аас ажилладаг бол хэвийн)
+	if h.Cfg.AIAPIKey != "" {
+		resp, err := h.tryGemini(ctx, systemPrompt, previousMessages, userMessage)
+		if err == nil {
+			return resp
+		}
+		geminiErr = err
+		log.Printf("ai_chat: gemini failed: %v", err)
+	}
+
+	// Хоёулаа fail хийсэн — хэрэглэгчид яг ямар алдаа гарсныг харуулна
+	if geminiErr == nil && orErr == nil {
+		return aiSetupMessage
+	}
+	return formatMultiProviderError(geminiErr, orErr)
 }
 
 func (h *AIChatHandler) tryGemini(ctx context.Context, systemPrompt string, previousMessages []models.AIMessage, userMessage string) (string, error) {

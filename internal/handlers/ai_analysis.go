@@ -1074,24 +1074,28 @@ Schema:
 
 	prompt := buildAnalysisPrompt(parsed)
 
-	// 1. Gemini direct
-	raw, geminiErr := h.tryGeminiAnalysis(ctx, systemPrompt, prompt)
+	var raw string
 
-	// 2. Gemini fail хийсэн (geo-block, quota гэх мэт) бол OpenRouter руу fallback
-	if geminiErr != nil && shouldTryFallback(geminiErr) && h.Cfg.OpenRouterAPIKey != "" {
-		log.Printf("ai_analysis: gemini failed (%v), falling back to openrouter", geminiErr)
+	// 1. OpenRouter — Mongolia-аас ажилладаг. Key байвал primary болгож үзнэ.
+	if h.Cfg.OpenRouterAPIKey != "" {
 		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, nil, prompt); orErr == nil {
 			raw = orResp
-			geminiErr = nil
 		} else {
-			log.Printf("ai_analysis: openrouter fallback failed: %v", orErr)
+			log.Printf("ai_analysis: openrouter failed: %v", orErr)
 		}
 	}
 
-	if geminiErr != nil || raw == "" {
-		if geminiErr != nil {
-			log.Printf("ai_analysis: all providers failed: %v", geminiErr)
+	// 2. Gemini direct (OpenRouter байхгүй эсвэл fail хийсэн үед)
+	if raw == "" && h.Cfg.AIAPIKey != "" {
+		if gResp, gErr := h.tryGeminiAnalysis(ctx, systemPrompt, prompt); gErr == nil {
+			raw = gResp
+		} else {
+			log.Printf("ai_analysis: gemini failed: %v", gErr)
 		}
+	}
+
+	if raw == "" {
+		// Бүх provider fail — rule-based-руу буцна
 		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
 	}
 

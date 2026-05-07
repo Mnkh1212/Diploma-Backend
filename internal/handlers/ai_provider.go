@@ -141,6 +141,61 @@ func shouldTryFallback(err error) bool {
 		strings.Contains(msg, "unavailable")
 }
 
+// formatMultiProviderError - OpenRouter + Gemini хоёулаа fail хийсэн үед
+// хэрэглэгчид яг ямар асуудал байгааг товч, шалгах боломжтой жагсаалттай харуулна.
+func formatMultiProviderError(geminiErr, orErr error) string {
+	var b strings.Builder
+	b.WriteString("❌ AI үйлчилгээ ажиллахгүй байна.\n\n")
+
+	if orErr != nil {
+		b.WriteString(fmt.Sprintf("• OpenRouter: %s\n", shortErr(orErr)))
+	}
+	if geminiErr != nil {
+		if isGeoBlockError(geminiErr) {
+			b.WriteString("• Gemini: Монголоос хандах боломжгүй (geo-block)\n")
+		} else {
+			b.WriteString(fmt.Sprintf("• Gemini: %s\n", shortErr(geminiErr)))
+		}
+	}
+
+	b.WriteString("\nШалгах зүйлс:\n")
+	if orErr != nil {
+		orMsg := strings.ToLower(orErr.Error())
+		switch {
+		case strings.Contains(orMsg, "401"), strings.Contains(orMsg, "unauthorized"):
+			b.WriteString("• OPENROUTER_API_KEY буруу. https://openrouter.ai/keys → шинэ key үүсгэх\n")
+		case strings.Contains(orMsg, "404"), strings.Contains(orMsg, "model"), strings.Contains(orMsg, "not found"):
+			b.WriteString("• OPENROUTER_MODEL буруу. Render env-д `google/gemini-2.0-flash-exp:free` гэж тохируулах\n")
+		case strings.Contains(orMsg, "402"), strings.Contains(orMsg, "credit"), strings.Contains(orMsg, "balance"), strings.Contains(orMsg, "payment"):
+			b.WriteString("• OpenRouter дансанд credit нэмэх эсвэл `:free` модел сонгох\n")
+		case strings.Contains(orMsg, "429"), strings.Contains(orMsg, "rate"):
+			b.WriteString("• OpenRouter rate limit — хэдэн минут хүлээгээд дахин оролдоорой\n")
+		case strings.Contains(orMsg, "verify"), strings.Contains(orMsg, "verification"):
+			b.WriteString("• OpenRouter free models-д заримдаа phone verification шаарддаг — https://openrouter.ai/settings/privacy\n")
+		default:
+			b.WriteString("• OpenRouter dashboard (https://openrouter.ai/activity) дээр сүүлийн request-ээ шалгах\n")
+		}
+	} else {
+		b.WriteString("• Render → Environment → `OPENROUTER_API_KEY` нэмэх (https://openrouter.ai/keys)\n")
+	}
+	if geminiErr != nil && isGeoBlockError(geminiErr) {
+		b.WriteString("• Gemini-г Монголоос ашиглах боломжгүй учир OpenRouter л шийдэл\n")
+	}
+
+	return b.String()
+}
+
+func shortErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200] + "..."
+	}
+	return msg
+}
+
 func init() {
 	// Background-д лог гаргахын тулд log хэрэгтэй.
 	_ = log.Println
