@@ -1049,24 +1049,16 @@ func computeCategoryBreakdown(txs []models.ParsedTransaction) []models.CategoryB
 // ===================== AI insights =====================
 
 func (h *AIAnalysisHandler) generateAIInsights(userID uint, parsed *models.ParsedStatement) (string, []string) {
-	// Хэрэв AI key байхгүй бол rule-based fallback
-	if h.Cfg.AIAPIKey == "" {
+	_ = userID
+	// Хэрэв ямар ч AI provider тохируулагдаагүй бол rule-based fallback
+	if h.Cfg.AIAPIKey == "" && h.Cfg.OpenRouterAPIKey == "" {
 		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
-	if err != nil {
-		log.Printf("gemini client init failed in analysis: %v", err)
-		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
-	}
-	defer client.Close()
-
-	model := client.GenerativeModel(h.Cfg.AIModel)
-	model.SystemInstruction = genai.NewUserContent(genai.Text(
-		`Та "FinTrack" санхүүгийн зөвлөгч AI юм. Монгол хэлээр товч, тодорхой хариулна.
+	systemPrompt := `Та "FinTrack" санхүүгийн зөвлөгч AI юм. Монгол хэлээр товч, тодорхой хариулна.
 Хэрэглэгчийн банкны хуулгад тулгуурлан JSON форматтай хариулна. Бусад текст, тайлбар бичихгүй.
 
 Schema:
@@ -1078,21 +1070,31 @@ Schema:
 Дүрэм:
 - Мөнгөн дүнг ₮ тэмдэгтэй, монгол ёсоор бичнэ.
 - Recommendations дэлгэрэнгүй, бодит тоонд тулгуурласан байна.
-- Хариулт зөвхөн valid JSON. Markdown код блок ашиглахгүй.`))
+- Хариулт зөвхөн valid JSON. Markdown код блок ашиглахгүй.`
 
 	prompt := buildAnalysisPrompt(parsed)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-	if err != nil {
-		log.Printf("gemini analysis failed: %v", err)
+	// 1. Gemini direct
+	raw, geminiErr := h.tryGeminiAnalysis(ctx, systemPrompt, prompt)
+
+	// 2. Gemini fail хийсэн (geo-block, quota гэх мэт) бол OpenRouter руу fallback
+	if geminiErr != nil && shouldTryFallback(geminiErr) && h.Cfg.OpenRouterAPIKey != "" {
+		log.Printf("ai_analysis: gemini failed (%v), falling back to openrouter", geminiErr)
+		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, nil, prompt); orErr == nil {
+			raw = orResp
+			geminiErr = nil
+		} else {
+			log.Printf("ai_analysis: openrouter fallback failed: %v", orErr)
+		}
+	}
+
+	if geminiErr != nil || raw == "" {
+		if geminiErr != nil {
+			log.Printf("ai_analysis: all providers failed: %v", geminiErr)
+		}
 		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
 	}
 
-	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return ruleBasedSummary(parsed), ruleBasedRecommendations(parsed)
-	}
-
-	raw := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
 	jsonStr := extractJSONObject(raw)
 
 	var parsedAI struct {
@@ -1111,6 +1113,31 @@ Schema:
 		parsedAI.Recommendations = ruleBasedRecommendations(parsed)
 	}
 	return parsedAI.Summary, parsedAI.Recommendations
+}
+
+// tryGeminiAnalysis - Gemini-ийн single-turn generation. Алдаа гарвал raw error
+// буцаана (caller fallback хийнэ).
+func (h *AIAnalysisHandler) tryGeminiAnalysis(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	if h.Cfg.AIAPIKey == "" {
+		return "", fmt.Errorf("gemini api key not configured")
+	}
+	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel(h.Cfg.AIModel)
+	model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
+
+	resp, err := model.GenerateContent(ctx, genai.Text(userPrompt))
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty gemini response")
+	}
+	return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0]), nil
 }
 
 // extractJSONObject - LLM-ийн хариунаас эхний бүтэн {...} JSON блокийг олж буцаана.

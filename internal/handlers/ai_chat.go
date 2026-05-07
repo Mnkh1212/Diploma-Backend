@@ -128,16 +128,8 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, previousMessages []models.AIMessage) string {
 	ctx := context.Background()
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
-	if err != nil {
-		log.Printf("gemini client init failed: %v", err)
-		return formatAIError(err)
-	}
-	defer client.Close()
-
 	financialContext, scopeNote := h.buildFinancialContext(userID, accountID)
-	model := client.GenerativeModel(h.Cfg.AIModel)
-	model.SystemInstruction = genai.NewUserContent(genai.Text(fmt.Sprintf(
+	systemPrompt := fmt.Sprintf(
 		`Та "FinTrack" санхүүгийн зөвлөгч AI юм. Хэрэглэгчийн санхүүгийн мэдээлэлд тулгуурлан Монгол хэлээр зөвлөгөө өгнө.
 
 %s
@@ -151,33 +143,75 @@ func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, p
 - Зөвхөн дээрх "%s"-ын мэдээлэлд тулгуурлан бодит зөвлөгөө өгнө
 - Хэмнэлт, хөрөнгө оруулалт, төсөвлөлтийн талаар зөвлөнө
 - Товч, ойлгомжтой хариулна
-- Emoji ашиглаж болно`, scopeNote, financialContext, scopeNote)))
+- Emoji ашиглаж болно`, scopeNote, financialContext, scopeNote)
+
+	// 1. Gemini direct
+	geminiResp, geminiErr := h.tryGemini(ctx, systemPrompt, previousMessages, userMessage)
+	if geminiErr == nil {
+		return geminiResp
+	}
+	log.Printf("gemini failed: %v", geminiErr)
+
+	// 2. Geo-block / quota үед OpenRouter руу fallback хийнэ
+	if shouldTryFallback(geminiErr) && h.Cfg.OpenRouterAPIKey != "" {
+		log.Printf("attempting openrouter fallback (model=%s)", h.Cfg.OpenRouterModel)
+		orHistory := convertHistoryToOR(previousMessages)
+		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, orHistory, userMessage); orErr == nil {
+			return orResp
+		} else {
+			log.Printf("openrouter fallback failed: %v", orErr)
+		}
+	}
+
+	// 3. Fallback бүгд fail хийсэн — Gemini-ийн алдааны мессежийг буцаана
+	return formatAIError(geminiErr)
+}
+
+func (h *AIChatHandler) tryGemini(ctx context.Context, systemPrompt string, previousMessages []models.AIMessage, userMessage string) (string, error) {
+	if h.Cfg.AIAPIKey == "" {
+		return "", fmt.Errorf("gemini api key not configured")
+	}
+	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel(h.Cfg.AIModel)
+	model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
 
 	cs := model.StartChat()
 	for _, msg := range previousMessages {
-		if msg.Role == "user" {
-			cs.History = append(cs.History, &genai.Content{
-				Role:  "user",
-				Parts: []genai.Part{genai.Text(msg.Content)},
-			})
-		} else {
-			cs.History = append(cs.History, &genai.Content{
-				Role:  "model",
-				Parts: []genai.Part{genai.Text(msg.Content)},
-			})
+		role := "user"
+		if msg.Role != "user" {
+			role = "model"
 		}
+		cs.History = append(cs.History, &genai.Content{
+			Role:  role,
+			Parts: []genai.Part{genai.Text(msg.Content)},
+		})
 	}
 
 	resp, err := cs.SendMessage(ctx, genai.Text(userMessage))
 	if err != nil {
-		log.Printf("gemini send message failed for model %s: %v", h.Cfg.AIModel, err)
-		return formatAIError(err)
+		return "", err
 	}
-
 	if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-		return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
+		return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0]), nil
 	}
-	return "Хариулт үүсгэж чадсангүй."
+	return "", fmt.Errorf("empty gemini response")
+}
+
+func convertHistoryToOR(prev []models.AIMessage) []orMessage {
+	out := make([]orMessage, 0, len(prev))
+	for _, msg := range prev {
+		role := "user"
+		if msg.Role != "user" {
+			role = "assistant"
+		}
+		out = append(out, orMessage{Role: role, Content: msg.Content})
+	}
+	return out
 }
 
 // buildFinancialContext - AI prompt-д өгөх санхүүгийн мэдээлэл болон scope-г буцаана.
@@ -478,6 +512,17 @@ func formatAIError(err error) string {
 	message := strings.ToLower(err.Error())
 
 	switch {
+	case strings.Contains(message, "user location is not supported"), strings.Contains(message, "location is not supported"), strings.Contains(message, "not available in your country"):
+		return "🌍 Google Gemini API нь Монголд хязгаарлагдсан байна.\n\n" +
+			"Шийдэл (аль нэгийг сонгоно уу):\n\n" +
+			"1️⃣ OpenRouter (хамгийн хялбар, үнэгүй):\n" +
+			"   • https://openrouter.ai/keys ороод бүртгүүл\n" +
+			"   • Шинэ key үүсгэх\n" +
+			"   • Render → Environment → `OPENROUTER_API_KEY` тохируулах\n" +
+			"   • Backend автоматаар Gemini-ээс OpenRouter руу шилжинэ\n\n" +
+			"2️⃣ Шинэ Gemini key (VPN ашиглах):\n" +
+			"   • US/EU VPN-ээр https://aistudio.google.com/app/apikey ороод шинэ key үүсгэх\n" +
+			"   • Render → `AI_API_KEY` шинэчлэх"
 	case strings.Contains(message, "leaked"):
 		return "AI API key нь олон нийтэд илэрсэн тул Google автоматаар хаасан байна. Шинэ key үүсгэж, Render-ийн `AI_API_KEY` env var-ыг шинэчлэнэ үү."
 	case strings.Contains(message, "api key"), strings.Contains(message, "permission denied"), strings.Contains(message, "unauthenticated"), strings.Contains(message, "authentication"):

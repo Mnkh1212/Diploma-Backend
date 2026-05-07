@@ -16,6 +16,11 @@ type Config struct {
 	Port       string
 	AIAPIKey   string
 	AIModel    string
+	// OpenRouter — geo-restricted бүс нутгуудад (Монгол г.м) Gemini-г proxy-лж
+	// дамжуулдаг үнэгүй сонголт. Set байвал Gemini fail хийсэн үед автоматаар
+	// fallback хийнэ. https://openrouter.ai/keys
+	OpenRouterAPIKey string
+	OpenRouterModel  string
 	GoogleIOSClientID string
 	GoogleWebClientID string
 	FacebookAppID     string
@@ -38,7 +43,9 @@ func Load() *Config {
 		AIAPIKey:   getFirstEnv("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
 		// Анхаар: gemini-2.0-flash нь зарим free key-ийн project-д quota=0
 		// байдаг тул gemini-2.5-flash-ийг default болгосон.
-		AIModel: getEnv("AI_MODEL", "gemini-2.5-flash"),
+		AIModel:          getEnv("AI_MODEL", "gemini-2.5-flash"),
+		OpenRouterAPIKey: getEnv("OPENROUTER_API_KEY", ""),
+		OpenRouterModel:  getEnv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"),
 		GoogleIOSClientID: getEnv("GOOGLE_IOS_CLIENT_ID", ""),
 		GoogleWebClientID: getEnv("GOOGLE_WEB_CLIENT_ID", ""),
 		FacebookAppID:     getEnv("FACEBOOK_APP_ID", ""),
