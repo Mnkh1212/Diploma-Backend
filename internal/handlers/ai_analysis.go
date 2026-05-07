@@ -228,17 +228,42 @@ func hydrateAnalysis(r models.AIAnalysis) models.AIAnalysisResponse {
 func (h *AIAnalysisHandler) parseStatement(path, originalName string) (*models.ParsedStatement, error) {
 	// 1. Python parser-ийг урьтал ашиглана
 	if h.Cfg.ParserServiceURL != "" {
+		start := time.Now()
 		parsed, err := callPythonParser(h.Cfg.ParserServiceURL, path, originalName)
+		elapsed := time.Since(start)
 		if err == nil && parsed != nil && len(parsed.Transactions) > 0 {
+			log.Printf("python parser success: %d transactions in %s", len(parsed.Transactions), elapsed)
 			return parsed, nil
 		}
-		log.Printf("python parser failed (%v) — Go fallback ажиллана", err)
+		// Алдаа гарсан эсвэл tx 0 байсан — Go fallback хийнэ. Энэ нь үргэлж
+		// тийм сайн биш учраас log дээр анхааруулга өгнө.
+		log.Printf("python parser failed after %s (err=%v, tx=%d) — Go fallback ажиллана. PDF parser-ын чанар муудна.",
+			elapsed, err, txCount(parsed))
+	} else {
+		log.Printf("PARSER_SERVICE_URL тохируулагдаагүй — Go fallback ашиглана")
 	}
 	// 2. Go-н fallback parser
 	return goFallbackParse(path)
 }
 
+func txCount(p *models.ParsedStatement) int {
+	if p == nil {
+		return 0
+	}
+	return len(p.Transactions)
+}
+
 func callPythonParser(baseURL, filePath, originalName string) (*models.ParsedStatement, error) {
+	// 1. Warmup ping — Render free tier 15 минут идэвхгүй бол сервис унтардаг.
+	// Cold start 30-60 секунд тул /parse-аас өмнө /health-руу хандаж сэргээнэ.
+	// Алдаа байсан ч үргэлжлүүлнэ — /parse өөрөө бас сэрээнэ.
+	warmupClient := &http.Client{Timeout: 90 * time.Second}
+	if healthReq, err := http.NewRequest("GET", strings.TrimRight(baseURL, "/")+"/health", nil); err == nil {
+		if warmupResp, _ := warmupClient.Do(healthReq); warmupResp != nil {
+			warmupResp.Body.Close()
+		}
+	}
+
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -264,7 +289,8 @@ func callPythonParser(baseURL, filePath, originalName string) (*models.ParsedSta
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// 2. Бодит parse call — cold start (60s) + ажиллах хугацаа (60s) = 120s budget.
+	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
