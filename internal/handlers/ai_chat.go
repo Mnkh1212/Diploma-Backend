@@ -102,7 +102,7 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 
 	var aiResponse string
 	if h.Cfg.AIAPIKey != "" {
-		aiResponse = h.callGemini(userID, req.Message, previousMessages)
+		aiResponse = h.callGemini(userID, req.AccountID, req.Message, previousMessages)
 	} else {
 		aiResponse = aiSetupMessage
 	}
@@ -125,7 +125,7 @@ func (h *AIChatHandler) SendMessage(c *gin.Context) {
 	LogActivity(h.DB, userID, "ai_chat_message", "ai_chat", chat.ID, "", "success", c.ClientIP())
 }
 
-func (h *AIChatHandler) callGemini(userID uint, userMessage string, previousMessages []models.AIMessage) string {
+func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, previousMessages []models.AIMessage) string {
 	ctx := context.Background()
 
 	client, err := genai.NewClient(ctx, option.WithAPIKey(h.Cfg.AIAPIKey))
@@ -135,9 +135,12 @@ func (h *AIChatHandler) callGemini(userID uint, userMessage string, previousMess
 	}
 	defer client.Close()
 
+	financialContext, scopeNote := h.buildFinancialContext(userID, accountID)
 	model := client.GenerativeModel(h.Cfg.AIModel)
 	model.SystemInstruction = genai.NewUserContent(genai.Text(fmt.Sprintf(
 		`Та "FinTrack" санхүүгийн зөвлөгч AI юм. Хэрэглэгчийн санхүүгийн мэдээлэлд тулгуурлан Монгол хэлээр зөвлөгөө өгнө.
+
+%s
 
 Хэрэглэгчийн санхүүгийн мэдээлэл:
 %s
@@ -145,10 +148,10 @@ func (h *AIChatHandler) callGemini(userID uint, userMessage string, previousMess
 Дүрэм:
 - Монгол хэлээр хариулна
 - Мөнгөн дүнг ₮ (төгрөг) тэмдэгтэйгээр харуулна
-- Хэрэглэгчийн санхүүгийн мэдээлэлд тулгуурлан бодит зөвлөгөө өгнө
+- Зөвхөн дээрх "%s"-ын мэдээлэлд тулгуурлан бодит зөвлөгөө өгнө
 - Хэмнэлт, хөрөнгө оруулалт, төсөвлөлтийн талаар зөвлөнө
 - Товч, ойлгомжтой хариулна
-- Emoji ашиглаж болно`, h.buildFinancialContext(userID))))
+- Emoji ашиглаж болно`, scopeNote, financialContext, scopeNote)))
 
 	cs := model.StartChat()
 	for _, msg := range previousMessages {
@@ -177,7 +180,98 @@ func (h *AIChatHandler) callGemini(userID uint, userMessage string, previousMess
 	return "Хариулт үүсгэж чадсангүй."
 }
 
-func (h *AIChatHandler) buildFinancialContext(userID uint) string {
+// buildFinancialContext - AI prompt-д өгөх санхүүгийн мэдээлэл болон scope-г буцаана.
+//
+// Хэрэв accountID > 0 бол ЗӨВХӨН тухайн данстай холбоотой бүх хугацааны мэдээллийг
+// (хуулга оруулсан хуучин огноо ч ороод) буцаана, ингэснээр AI зөвөлгөө тухайн
+// банкинд "tailored" болж гарна. Үгүй бол одоогийн сарын аггрегат + бүх дансны нэгтгэл.
+func (h *AIChatHandler) buildFinancialContext(userID, accountID uint) (string, string) {
+	if accountID > 0 {
+		return h.buildAccountContext(userID, accountID)
+	}
+	return h.buildAllAccountsContext(userID)
+}
+
+func (h *AIChatHandler) buildAccountContext(userID, accountID uint) (string, string) {
+	var account models.Account
+	if err := h.DB.Where("user_id = ? AND id = ?", userID, accountID).First(&account).Error; err != nil {
+		// Account олдоогүй бол overall view руу буцна
+		return h.buildAllAccountsContext(userID)
+	}
+
+	scope := fmt.Sprintf("Хамрах хүрээ: %s данс (бүх хугацаа)", account.Name)
+
+	var income, expense float64
+	h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND account_id = ? AND type = ?", userID, accountID, "income").
+		Select("COALESCE(SUM(amount), 0)").Scan(&income)
+	h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND account_id = ? AND type = ?", userID, accountID, "expense").
+		Select("COALESCE(SUM(amount), 0)").Scan(&expense)
+
+	var txCount int64
+	h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND account_id = ?", userID, accountID).Count(&txCount)
+
+	type catExpense struct {
+		Name  string
+		Total float64
+	}
+	var topCategories []catExpense
+	h.DB.Model(&models.Transaction{}).
+		Select("categories.name, SUM(transactions.amount) as total").
+		Joins("JOIN categories ON categories.id = transactions.category_id").
+		Where("transactions.user_id = ? AND transactions.account_id = ? AND transactions.type = ?", userID, accountID, "expense").
+		Group("categories.name").Order("total DESC").Limit(5).Scan(&topCategories)
+
+	type recentTx struct {
+		Date        time.Time
+		Description string
+		Amount      float64
+		Type        string
+	}
+	var recents []recentTx
+	h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND account_id = ?", userID, accountID).
+		Order("date DESC, created_at DESC").Limit(8).
+		Scan(&recents)
+
+	savingsRate := 0.0
+	if income > 0 {
+		savingsRate = ((income - expense) / income) * 100
+	}
+
+	result := fmt.Sprintf("Данс: %s (%s)\n", account.Name, account.Type)
+	result += fmt.Sprintf("Үлдэгдэл: %.0f₮\n", account.Balance)
+	result += fmt.Sprintf("Нийт орлого: %.0f₮\n", income)
+	result += fmt.Sprintf("Нийт зарлага: %.0f₮\n", expense)
+	result += fmt.Sprintf("Цэвэр (орлого - зарлага): %.0f₮\n", income-expense)
+	result += fmt.Sprintf("Хэмнэлтийн хувь: %.1f%%\n", savingsRate)
+	result += fmt.Sprintf("Гүйлгээний тоо: %d\n", txCount)
+
+	if len(topCategories) > 0 {
+		result += "\nЭнэ дансны хамгийн их зарлагатай ангилал:\n"
+		for i, cat := range topCategories {
+			result += fmt.Sprintf("%d. %s: %.0f₮\n", i+1, cat.Name, cat.Total)
+		}
+	}
+
+	if len(recents) > 0 {
+		result += "\nСүүлийн гүйлгээнүүд:\n"
+		for _, t := range recents {
+			sign := "-"
+			if t.Type == "income" {
+				sign = "+"
+			}
+			result += fmt.Sprintf("- %s: %s%.0f₮ (%s)\n", t.Date.Format("2006-01-02"), sign, t.Amount, truncateString(t.Description, 50))
+		}
+	}
+
+	return result, scope
+}
+
+func (h *AIChatHandler) buildAllAccountsContext(userID uint) (string, string) {
+	scope := "Хамрах хүрээ: Бүх данс (энэ сар)"
 	now := time.Now()
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	startOfLastMonth := startOfMonth.AddDate(0, -1, 0)
@@ -255,7 +349,7 @@ func (h *AIChatHandler) buildFinancialContext(userID uint) string {
 			result += fmt.Sprintf("- %s: %.0f₮ / %.0f₮ (%.0f%%)\n", catName, b.Spent, b.Amount, pct)
 		}
 	}
-	return result
+	return result, scope
 }
 
 func (h *AIChatHandler) DeleteChat(c *gin.Context) {

@@ -250,8 +250,9 @@ type CreateBudgetRequest struct {
 }
 
 type AIChatRequest struct {
-	Message string `json:"message" binding:"required"`
-	ChatID  uint   `json:"chat_id"`
+	Message   string `json:"message" binding:"required"`
+	ChatID    uint   `json:"chat_id"`
+	AccountID uint   `json:"account_id"`
 }
 
 type DashboardResponse struct {
