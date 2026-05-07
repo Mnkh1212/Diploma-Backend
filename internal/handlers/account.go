@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"fintrack-backend/internal/models"
 	"github.com/gin-gonic/gin"
@@ -121,4 +122,63 @@ func (h *AccountHandler) GetCategories(c *gin.Context) {
 	query.Find(&categories)
 
 	c.JSON(http.StatusOK, categories)
+}
+
+// CreateCategory - хэрэглэгчийн гар оруулсан шинэ ангилал нэмэх.
+// Ижил нэр + type-тай ангилал байгаа бол түүнийг буцаана (find-or-create).
+func (h *AccountHandler) CreateCategory(c *gin.Context) {
+	var req models.CreateCategoryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Нэр шаардлагатай"})
+		return
+	}
+
+	// Find-or-create
+	var existing models.Category
+	if err := h.DB.Where("LOWER(name) = LOWER(?) AND type = ?", name, req.Type).
+		First(&existing).Error; err == nil {
+		c.JSON(http.StatusOK, existing)
+		return
+	}
+
+	icon := req.Icon
+	if icon == "" {
+		icon = "pricetag-outline"
+	}
+	color := req.Color
+	if color == "" {
+		color = pickCategoryColor(name)
+	}
+
+	cat := models.Category{
+		Name:  name,
+		Type:  req.Type,
+		Icon:  icon,
+		Color: color,
+	}
+	if err := h.DB.Create(&cat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ангилал үүсгэж чадсангүй"})
+		return
+	}
+	c.JSON(http.StatusCreated, cat)
+}
+
+// pickCategoryColor - ангиллын нэрнээс тогтмол өнгө сонгоно.
+func pickCategoryColor(seed string) string {
+	palette := []string{
+		"#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+		"#DDA0DD", "#F39C12", "#E74C3C", "#3498DB", "#9B59B6",
+		"#E056A0", "#00B894", "#6C5CE7", "#FDCB6E", "#74B9FF", "#A29BFE",
+	}
+	var sum int
+	for _, r := range seed {
+		sum += int(r)
+	}
+	return palette[sum%len(palette)]
 }

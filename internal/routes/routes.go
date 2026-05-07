@@ -67,6 +67,7 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 
 		// Categories
 		protected.GET("/categories", accountHandler.GetCategories)
+		protected.POST("/categories", accountHandler.CreateCategory)
 
 		// Scheduled Payments
 		protected.POST("/scheduled-payments", scheduledHandler.Create)

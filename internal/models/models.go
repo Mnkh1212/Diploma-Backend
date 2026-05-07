@@ -234,12 +234,24 @@ type AuthResponse struct {
 }
 
 type CreateTransactionRequest struct {
-	AccountID   uint    `json:"account_id" binding:"required"`
-	CategoryID  uint    `json:"category_id" binding:"required"`
-	Amount      float64 `json:"amount" binding:"required"`
-	Type        string  `json:"type" binding:"required,oneof=income expense"`
-	Description string  `json:"description"`
-	Date        string  `json:"date" binding:"required"`
+	AccountID uint `json:"account_id" binding:"required"`
+	// CategoryID: Сонгогдсон ангилалын ID. Хэрэв 0 бол CategoryName-ийг үзнэ.
+	CategoryID uint `json:"category_id"`
+	// CategoryName: Хэрэглэгчийн гар оруулсан шинэ ангилалын нэр.
+	// CategoryID==0 үед хэрэглэнэ. Нэр байгаа бол find-or-create. Хоосон бол "Бусад".
+	CategoryName string  `json:"category_name"`
+	Amount       float64 `json:"amount" binding:"required"`
+	Type         string  `json:"type" binding:"required,oneof=income expense"`
+	Description  string  `json:"description"`
+	Date         string  `json:"date" binding:"required"`
+}
+
+// CreateCategoryRequest — хэрэглэгч шинэ ангилал нэмэх POST /categories хүсэлт
+type CreateCategoryRequest struct {
+	Name  string `json:"name" binding:"required"`
+	Type  string `json:"type" binding:"required,oneof=income expense"`
+	Icon  string `json:"icon"`
+	Color string `json:"color"`
 }
 
 type CreateBudgetRequest struct {

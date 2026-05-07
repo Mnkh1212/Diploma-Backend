@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"fintrack-backend/internal/models"
@@ -34,10 +35,18 @@ func (h *TransactionHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Ангилал шийдэх: CategoryID өгсөн бол түүгээр; үгүй CategoryName бол
+	// find-or-create; хоосон бол "Бусад" руу буцаана.
+	categoryID, catErr := h.resolveCategory(req.CategoryID, req.CategoryName, req.Type)
+	if catErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": catErr.Error()})
+		return
+	}
+
 	tx := models.Transaction{
 		UserID:      userID,
 		AccountID:   req.AccountID,
-		CategoryID:  req.CategoryID,
+		CategoryID:  categoryID,
 		Amount:      req.Amount,
 		Type:        req.Type,
 		Description: req.Description,
@@ -64,7 +73,7 @@ func (h *TransactionHandler) Create(c *gin.Context) {
 	if req.Type == "expense" {
 		var budget models.Budget
 		if err := h.DB.Where("user_id = ? AND category_id = ? AND month = ? AND year = ?",
-			userID, req.CategoryID, int(date.Month()), date.Year()).First(&budget).Error; err == nil {
+			userID, categoryID, int(date.Month()), date.Year()).First(&budget).Error; err == nil {
 			budget.Spent += req.Amount
 			h.DB.Save(&budget)
 		}
@@ -73,6 +82,63 @@ func (h *TransactionHandler) Create(c *gin.Context) {
 	h.DB.Preload("Category").Preload("Account").First(&tx, tx.ID)
 	c.JSON(http.StatusCreated, tx)
 	LogActivity(h.DB, userID, "create_transaction", "transaction", tx.ID, fmt.Sprintf(`{"amount":%.2f,"type":"%s"}`, tx.Amount, tx.Type), "success", c.ClientIP())
+}
+
+// resolveCategory - гүйлгээ үүсгэх үед ангиллыг шийднэ:
+//
+//  1. catID > 0 бол түүгээр шууд хайна (DB-д байхгүй бол алдаа)
+//  2. catID == 0 бөгөөд name өгсөн бол: case-insensitive trim хийгээд
+//     ижил нэр + type-тай ангилал хайна. Олдохгүй бол шинээр үүсгэнэ.
+//  3. catID == 0 + name хоосон бол "Бусад" нэртэй ангиллыг буцаана.
+//     "Бусад" байхгүй бол шинээр (expense type-аар) үүсгэнэ.
+func (h *TransactionHandler) resolveCategory(catID uint, name, txType string) (uint, error) {
+	if catID > 0 {
+		var existing models.Category
+		if err := h.DB.First(&existing, catID).Error; err != nil {
+			return 0, fmt.Errorf("category_id %d not found", catID)
+		}
+		return existing.ID, nil
+	}
+
+	cleanName := strings.TrimSpace(name)
+	if cleanName == "" {
+		cleanName = "Бусад"
+	}
+
+	// Найдвартай тохирол: ижил нэр (case-insensitive) + type
+	var existing models.Category
+	err := h.DB.Where("LOWER(name) = LOWER(?) AND type = ?", cleanName, txType).
+		First(&existing).Error
+	if err == nil {
+		return existing.ID, nil
+	}
+
+	// Шинэ ангилал үүсгэх
+	newCat := models.Category{
+		Name:  cleanName,
+		Type:  txType,
+		Icon:  "pricetag-outline",
+		Color: pickRandomColor(cleanName),
+	}
+	if err := h.DB.Create(&newCat).Error; err != nil {
+		return 0, fmt.Errorf("category create failed: %w", err)
+	}
+	return newCat.ID, nil
+}
+
+// pickRandomColor - ангиллын нэрнээс тогтмол өнгө сонгоно (нэг нэрэнд үргэлж
+// нэг өнгө). Hash-based simple deterministic.
+func pickRandomColor(seed string) string {
+	palette := []string{
+		"#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+		"#DDA0DD", "#F39C12", "#E74C3C", "#3498DB", "#9B59B6",
+		"#E056A0", "#00B894", "#6C5CE7", "#FDCB6E", "#74B9FF", "#A29BFE",
+	}
+	var sum int
+	for _, r := range seed {
+		sum += int(r)
+	}
+	return palette[sum%len(palette)]
 }
 
 func (h *TransactionHandler) List(c *gin.Context) {
