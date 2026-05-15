@@ -28,6 +28,7 @@ func Setup(r *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	{
 		api.POST("/auth/register", authHandler.Register)
 		api.POST("/auth/login", authHandler.Login)
+		api.POST("/auth/reset-password", authHandler.ResetPassword)
 		api.GET("/auth/social/providers", authHandler.GetSocialProviders)
 		api.POST("/auth/social/login", authHandler.SocialLogin)
 	}

@@ -212,6 +212,60 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
+// ResetPassword - Нууц үг мартсан хэрэглэгчид нууц үг шинээр тавихыг зөвшөөрнө.
+//
+// MVP логик: email + new_password гарт оруулсныг хүлээн авч, тухайн email-тэй
+// хэрэглэгч байгаа эсэхийг шалгаад нууц үгийг шинэчилнэ.
+//
+// Production жинхэнэ систем дээр энд email-ээр баталгаажуулах код илгээж, тэр
+// кодыг үндэслэн дахин баталгаажуулдаг байх ёстой (SMTP integration шаардана).
+// Diploma project-ийн хүрээнд эзэмшигч хэрэглэгч өөрөө л ашиглах учир хялбар
+// approach-ыг сонгов.
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var input struct {
+		Email       string `json:"email" binding:"required,email"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+
+	var user models.User
+	if err := h.DB.Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
+		// Аюулгүй байдлын үүднээс хэрэглэгч байгаа эсэхийг харуулахгүй.
+		// Хэдийгээр ингэснээр зүгээр л success буцаачихаж болох ч энэ бол MVP,
+		// бодит хэрэглэгчийн төөрөгдөл багасахын тулд алдааг шууд хэлнэ.
+		c.JSON(http.StatusNotFound, gin.H{"error": "Энэ имэйлээр бүртгэлтэй хэрэглэгч олдсонгүй"})
+		return
+	}
+
+	// Social-only хэрэглэгч (Google/Apple) — нууц үггүй, шинээр тавих утгагүй
+	if user.AuthProvider != "" && user.AuthProvider != "password" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Та %s-ээр бүртгүүлсэн байна. Нууц үг шинэчлэх боломжгүй.", user.AuthProvider),
+		})
+		return
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Нууц үг хашлахад алдаа гарлаа"})
+		return
+	}
+
+	user.Password = string(hashed)
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Нууц үг шинэчилж чадсангүй"})
+		return
+	}
+
+	LogActivity(h.DB, user.ID, "reset_password", "user", user.ID, "", "success", c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{"message": "Нууц үг амжилттай шинэчлэгдлээ. Нэвтэрнэ үү."})
+}
+
 func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
