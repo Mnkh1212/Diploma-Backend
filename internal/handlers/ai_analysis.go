@@ -1114,21 +1114,21 @@ Schema:
 
 	var raw string
 
-	// 1. OpenRouter — Mongolia-аас ажилладаг. Key байвал primary болгож үзнэ.
-	if h.Cfg.OpenRouterAPIKey != "" {
-		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, nil, prompt); orErr == nil {
-			raw = orResp
-		} else {
-			log.Printf("ai_analysis: openrouter failed: %v", orErr)
-		}
-	}
-
-	// 2. Gemini direct (OpenRouter байхгүй эсвэл fail хийсэн үед)
-	if raw == "" && h.Cfg.AIAPIKey != "" {
+	// 1. Gemini direct — primary. Key байвал эхэлж туршина.
+	if h.Cfg.AIAPIKey != "" {
 		if gResp, gErr := h.tryGeminiAnalysis(ctx, systemPrompt, prompt); gErr == nil {
 			raw = gResp
 		} else {
 			log.Printf("ai_analysis: gemini failed: %v", gErr)
+		}
+	}
+
+	// 2. OpenRouter fallback — Gemini fail хийсэн үед.
+	if raw == "" && h.Cfg.OpenRouterAPIKey != "" {
+		if orResp, orErr := callOpenRouter(ctx, h.Cfg, systemPrompt, nil, prompt); orErr == nil {
+			raw = orResp
+		} else {
+			log.Printf("ai_analysis: openrouter failed: %v", orErr)
 		}
 	}
 

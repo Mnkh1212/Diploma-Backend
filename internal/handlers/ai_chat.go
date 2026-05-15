@@ -147,7 +147,18 @@ func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, p
 
 	var geminiErr, orErr error
 
-	// 1. OpenRouter — Mongolia-ээс ажилладаг. Key байвал primary болгож үзнэ.
+	// 1. Gemini direct — primary. Key байвал эхэлж туршина.
+	if h.Cfg.AIAPIKey != "" {
+		log.Printf("ai_chat: trying gemini (model=%s)", h.Cfg.AIModel)
+		resp, err := h.tryGemini(ctx, systemPrompt, previousMessages, userMessage)
+		if err == nil {
+			return resp
+		}
+		geminiErr = err
+		log.Printf("ai_chat: gemini failed: %v", err)
+	}
+
+	// 2. OpenRouter fallback — Gemini fail хийсэн үед.
 	if h.Cfg.OpenRouterAPIKey != "" {
 		log.Printf("ai_chat: trying openrouter (model=%s)", h.Cfg.OpenRouterModel)
 		orHistory := convertHistoryToOR(previousMessages)
@@ -157,16 +168,6 @@ func (h *AIChatHandler) callGemini(userID, accountID uint, userMessage string, p
 		}
 		orErr = err
 		log.Printf("ai_chat: openrouter failed: %v", err)
-	}
-
-	// 2. Gemini direct (Render US-аас ажилладаг бол хэвийн)
-	if h.Cfg.AIAPIKey != "" {
-		resp, err := h.tryGemini(ctx, systemPrompt, previousMessages, userMessage)
-		if err == nil {
-			return resp
-		}
-		geminiErr = err
-		log.Printf("ai_chat: gemini failed: %v", err)
 	}
 
 	// Хоёулаа fail хийсэн — хэрэглэгчид яг ямар алдаа гарсныг харуулна
