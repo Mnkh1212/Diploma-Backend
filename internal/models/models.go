@@ -141,34 +141,40 @@ type AIAnalysis struct {
 	PeriodStart     string    `json:"period_start"`
 	PeriodEnd       string    `json:"period_end"`
 	// JSON хэлбэрээр хадгалагдана. CategoryBreakdown, Transactions, Recommendations
-	CategoriesJSON      string    `json:"-" gorm:"type:text;column:categories_json"`
-	TransactionsJSON    string    `json:"-" gorm:"type:text;column:transactions_json"`
-	RecommendationsJSON string    `json:"-" gorm:"type:text;column:recommendations_json"`
-	AISummary           string    `json:"ai_summary" gorm:"type:text"`
-	User                User      `json:"-" gorm:"foreignKey:UserID"`
-	CreatedAt           time.Time `json:"created_at"`
+	CategoriesJSON       string    `json:"-" gorm:"type:text;column:categories_json"`
+	TransactionsJSON     string    `json:"-" gorm:"type:text;column:transactions_json"`
+	RecommendationsJSON  string    `json:"-" gorm:"type:text;column:recommendations_json"`
+	CounterpartiesJSON   string    `json:"-" gorm:"type:text;column:counterparties_json"`
+	PatternsJSON         string    `json:"-" gorm:"type:text;column:patterns_json"`
+	AISummary            string    `json:"ai_summary" gorm:"type:text"`
+	User                 User      `json:"-" gorm:"foreignKey:UserID"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 // Statement parser-аас буцах structured response
 type ParsedStatement struct {
-	BankName         string                 `json:"bank_name"`
-	OpeningBalance   float64                `json:"opening_balance"`
-	ClosingBalance   float64                `json:"closing_balance"`
-	TotalIncome      float64                `json:"total_income"`
-	TotalExpenses    float64                `json:"total_expenses"`
-	PeriodStart      string                 `json:"period_start"`
-	PeriodEnd        string                 `json:"period_end"`
-	Transactions     []ParsedTransaction    `json:"transactions"`
-	CategoryBreakdown []CategoryBreakdown   `json:"category_breakdown"`
+	BankName              string                   `json:"bank_name"`
+	OpeningBalance        float64                  `json:"opening_balance"`
+	ClosingBalance        float64                  `json:"closing_balance"`
+	TotalIncome           float64                  `json:"total_income"`
+	TotalExpenses         float64                  `json:"total_expenses"`
+	PeriodStart           string                   `json:"period_start"`
+	PeriodEnd             string                   `json:"period_end"`
+	Transactions          []ParsedTransaction      `json:"transactions"`
+	CategoryBreakdown     []CategoryBreakdown      `json:"category_breakdown"`
+	CounterpartyBreakdown []CounterpartyBreakdown  `json:"counterparty_breakdown"`
+	Patterns              []PatternInsight         `json:"patterns"`
 }
 
 type ParsedTransaction struct {
-	Date        string  `json:"date"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Type        string  `json:"type"` // income / expense
-	Category    string  `json:"category"`
-	Balance     float64 `json:"balance"`
+	Date         string  `json:"date"`
+	Description  string  `json:"description"`
+	Amount       float64 `json:"amount"`
+	Type         string  `json:"type"` // income / expense
+	Category     string  `json:"category"`
+	Balance      float64 `json:"balance"`
+	Counterparty string  `json:"counterparty"` // Харьцсан этгээд (merchant нэр)
+	Channel      string  `json:"channel"`      // POS / BOM / SocialPay / qpay / Transfer / Fee
 }
 
 type CategoryBreakdown struct {
@@ -178,24 +184,44 @@ type CategoryBreakdown struct {
 	Count      int     `json:"count"`
 }
 
+// CounterpartyBreakdown - харьцсан этгээдээр нэгтгэсэн тоо/дүн.
+type CounterpartyBreakdown struct {
+	Counterparty string  `json:"counterparty"`
+	Amount       float64 `json:"amount"`
+	Count        int     `json:"count"`
+	Type         string  `json:"type"` // income / expense
+	AvgAmount    float64 `json:"avg_amount"`
+}
+
+// PatternInsight - parser-аас илрүүлсэн анхаарал татах хэв шинж.
+type PatternInsight struct {
+	Kind   string  `json:"kind"` // top_recipient / large_single / recurring / channel_breakdown
+	Title  string  `json:"title"`
+	Detail string  `json:"detail"`
+	Amount float64 `json:"amount"`
+	Count  int     `json:"count"`
+}
+
 // AIAnalysisResponse - frontend-рүү буцаагдах full payload
 type AIAnalysisResponse struct {
-	ID              uint                `json:"id"`
-	Filename        string              `json:"filename"`
-	BankName        string              `json:"bank_name"`
-	OpeningBalance  float64             `json:"opening_balance"`
-	ClosingBalance  float64             `json:"closing_balance"`
-	TotalIncome     float64             `json:"total_income"`
-	TotalExpenses   float64             `json:"total_expenses"`
-	NetCashflow     float64             `json:"net_cashflow"`
-	TransactionCount int                `json:"transaction_count"`
-	PeriodStart     string              `json:"period_start"`
-	PeriodEnd       string              `json:"period_end"`
-	Transactions    []ParsedTransaction `json:"transactions"`
-	Categories      []CategoryBreakdown `json:"categories"`
-	Recommendations []string            `json:"recommendations"`
-	AISummary       string              `json:"ai_summary"`
-	CreatedAt       time.Time           `json:"created_at"`
+	ID               uint                    `json:"id"`
+	Filename         string                  `json:"filename"`
+	BankName         string                  `json:"bank_name"`
+	OpeningBalance   float64                 `json:"opening_balance"`
+	ClosingBalance   float64                 `json:"closing_balance"`
+	TotalIncome      float64                 `json:"total_income"`
+	TotalExpenses    float64                 `json:"total_expenses"`
+	NetCashflow      float64                 `json:"net_cashflow"`
+	TransactionCount int                     `json:"transaction_count"`
+	PeriodStart      string                  `json:"period_start"`
+	PeriodEnd        string                  `json:"period_end"`
+	Transactions     []ParsedTransaction     `json:"transactions"`
+	Categories       []CategoryBreakdown     `json:"categories"`
+	Counterparties   []CounterpartyBreakdown `json:"counterparties"`
+	Patterns         []PatternInsight        `json:"patterns"`
+	Recommendations  []string                `json:"recommendations"`
+	AISummary        string                  `json:"ai_summary"`
+	CreatedAt        time.Time               `json:"created_at"`
 }
 
 // Request/Response DTOs

@@ -43,6 +43,8 @@ class ParsedTransaction(BaseModel):
     type: str = "expense"
     category: str = "Бусад"
     balance: float = 0.0
+    counterparty: str = ""  # Харьцсан этгээд (merchant нэр, дансан эзэмшигч)
+    channel: str = ""  # POS, BOM, SocialPay, qpay, Transfer гэх мэт
 
 
 class CategoryBreakdown(BaseModel):
@@ -50,6 +52,22 @@ class CategoryBreakdown(BaseModel):
     amount: float
     percentage: float
     count: int
+
+
+class CounterpartyBreakdown(BaseModel):
+    counterparty: str
+    amount: float
+    count: int
+    type: str  # income / expense
+    avg_amount: float
+
+
+class PatternInsight(BaseModel):
+    kind: str  # "top_recipient", "large_single", "recurring", "channel_breakdown"
+    title: str
+    detail: str
+    amount: float = 0.0
+    count: int = 0
 
 
 class ParsedStatement(BaseModel):
@@ -62,6 +80,8 @@ class ParsedStatement(BaseModel):
     period_end: str = ""
     transactions: List[ParsedTransaction] = []
     category_breakdown: List[CategoryBreakdown] = []
+    counterparty_breakdown: List[CounterpartyBreakdown] = []
+    patterns: List[PatternInsight] = []
 
 
 # ===================== Helpers =====================
@@ -90,6 +110,126 @@ def classify(desc: str) -> str:
         if any(k in low for k in keywords):
             return cat
     return "Бусад"
+
+
+# ===================== Counterparty + channel extraction =====================
+#
+# Гүйлгээний тайлбараас хэн рүү / хэнээс гүйлгээ хийгдсэнийг шүүж олно.
+# Жишээ:
+#   "554835******2609:24-01-2026 12:24:31:POS:KFCMONGOL"
+#     → counterparty="KFCMONGOL", channel="POS"
+#   "SocialPay гүйлгээ,МӨНХЖАВХЛАН БАЯРЖАРГАЛ"
+#     → counterparty="МӨНХЖАВХЛАН БАЯРЖАРГАЛ", channel="SocialPay"
+#   "HAPPY PAY ГҮЙЛГЭЭ-МӨНХ-ЭРДЭНЭ БАТТҮВШИН"
+#     → counterparty="МӨНХ-ЭРДЭНЭ БАТТҮВШИН", channel="HappyPay"
+#   "qpay 770431279975287, 202602161110,АВТО"
+#     → counterparty="АВТО", channel="qpay"
+#   "Charges for PORD Customer Payment :000532547116"
+#     → counterparty="", channel="Fee"
+
+POS_RE = re.compile(r"POS:([A-Z0-9 ./\-]+?)(?:\s*\(Ханш|\s*$)", re.IGNORECASE)
+BOM_RE = re.compile(r"BOM:([A-Z0-9 ./\-]+?)(?:\s*\(Ханш|\s*$)", re.IGNORECASE)
+SOCIALPAY_RE = re.compile(r"socialpay\s+гүйлгээ[,，]\s*([^,，()]+)", re.IGNORECASE)
+DASH_NAME_RE = re.compile(
+    r"(?:ШИЛЖҮҮЛЭГ|HAPPY\s*PAY\s*ГҮЙЛГЭЭ|EB\s*-?[^-]*ИЛГЭЭВ|ГҮЙЛГЭЭ)\s*-+\s*(.+?)(?:\s*\(Ханш|$)",
+    re.IGNORECASE,
+)
+QPAY_RE = re.compile(r"qpay\s+\d+[, ]+[\d\-A-Za-z]*[, ]+([^,()]+)", re.IGNORECASE)
+NAME_BANK_RE = re.compile(
+    r"^([А-ЯЁӨҮ\s\-\.]+(?:\s[А-ЯЁӨҮ\-\.]+)+?)\s*[,，]\s*([А-ЯЁӨҮ\s\-\.]+(?:БАНК|ТӨВ))",
+    re.IGNORECASE,
+)
+FEE_KEYWORDS = (
+    "charges for", "гүйлгээний шимтгэл", "данс хөтөлсний", "шимтгэл",
+    "interest", "хүү", "fee",
+)
+
+
+def extract_counterparty(desc: str) -> Tuple[str, str]:
+    """Description-аас counterparty + channel-ийг шүүж буцаана.
+
+    Буцаах: (counterparty, channel).
+    Хэрэв олдохгүй бол хоосон string-үүд.
+    """
+    if not desc:
+        return "", ""
+
+    text = desc.strip()
+    low = text.lower()
+
+    # Шимтгэл/хүү — counterparty үгүй, channel=Fee
+    for kw in FEE_KEYWORDS:
+        if kw in low:
+            return "", "Fee"
+
+    # POS payment (card swipe at merchant)
+    m = POS_RE.search(text)
+    if m:
+        return _clean_name(m.group(1)), "POS"
+
+    # BOM (Bank of Mongolia? — Голомтын мерчантын код)
+    m = BOM_RE.search(text)
+    if m:
+        return _clean_name(m.group(1)), "BOM"
+
+    # SocialPay
+    m = SOCIALPAY_RE.search(text)
+    if m:
+        return _clean_name(m.group(1)), "SocialPay"
+
+    # HappyPay / EB / Шилжүүлэг — dash-аар нэр салгасан
+    m = DASH_NAME_RE.search(text)
+    if m:
+        channel = "Transfer"
+        if "happy" in low:
+            channel = "HappyPay"
+        elif "eb" in low and "илгээв" in low:
+            channel = "EB"
+        elif "шилжүүлэг" in low:
+            channel = "Transfer"
+        return _clean_name(m.group(1)), channel
+
+    # qpay
+    m = QPAY_RE.search(text)
+    if m:
+        return _clean_name(m.group(1)), "qpay"
+    if low.startswith("qpay"):
+        return "", "qpay"
+
+    # NAME, BANK form
+    m = NAME_BANK_RE.search(text)
+    if m:
+        return _clean_name(m.group(1)), "Transfer"
+
+    return "", ""
+
+
+def _clean_name(name: str) -> str:
+    if not name:
+        return ""
+    s = name.strip()
+    # Trailing comma/dot-уудыг арилгана
+    s = re.sub(r"[,，.\s]+$", "", s)
+    # Олон зайтай бол ганц зай болгоно
+    s = re.sub(r"\s+", " ", s)
+    # Эхэнд тоо/цэг олонтой бол арилгана
+    s = re.sub(r"^[\d.,\-:]+\s*", "", s)
+    if len(s) > 60:
+        s = s[:60]
+    return s
+
+
+def enrich(tx: ParsedTransaction) -> ParsedTransaction:
+    """ParsedTransaction-ийг counterparty + channel-аар баяжуулна.
+
+    Бүх parse_*_format функцид буцаахаасаа өмнө энэ функцийг дуудаж нэг газар
+    counterparty оноох логиктой байлгана.
+    """
+    if not tx.counterparty:
+        cp, channel = extract_counterparty(tx.description)
+        tx.counterparty = cp
+        tx.channel = channel
+    return tx
 
 
 BANK_KEYWORDS = [
@@ -1045,6 +1185,122 @@ def aggregate(transactions: List[ParsedTransaction]) -> Tuple[float, float, List
     return income, expense, breakdown, period_start, period_end
 
 
+def aggregate_counterparties(
+    transactions: List[ParsedTransaction],
+) -> List[CounterpartyBreakdown]:
+    """Counterparty + type-аар нэгтгэж зарцуулалт/орлогыг харуулна."""
+    totals: dict = defaultdict(lambda: {"amount": 0.0, "count": 0, "type": ""})
+    for t in transactions:
+        if not t.counterparty:
+            continue
+        key = (t.counterparty, t.type)
+        totals[key]["amount"] += t.amount
+        totals[key]["count"] += 1
+        totals[key]["type"] = t.type
+
+    out: List[CounterpartyBreakdown] = []
+    for (cp, _typ), data in totals.items():
+        out.append(
+            CounterpartyBreakdown(
+                counterparty=cp,
+                amount=data["amount"],
+                count=data["count"],
+                type=data["type"],
+                avg_amount=data["amount"] / data["count"] if data["count"] > 0 else 0.0,
+            )
+        )
+    out.sort(key=lambda c: c.amount, reverse=True)
+    return out
+
+
+def detect_patterns(
+    transactions: List[ParsedTransaction],
+    counterparties: List[CounterpartyBreakdown],
+) -> List[PatternInsight]:
+    """Гүйлгээний өгөгдөлд анхаарал татах хэв шинжийг олно.
+
+    - Хамгийн их зарцуулсан мерчант
+    - Хамгийн их 1 удаагийн зарлага
+    - Давтагдсан гүйлгээ (3+ удаа ижил мерчант руу)
+    - Channel breakdown (POS vs SocialPay vs HappyPay г.м)
+    """
+    patterns: List[PatternInsight] = []
+
+    # 1. Top expense counterparty
+    expenses = [c for c in counterparties if c.type == "expense"]
+    if expenses:
+        top = expenses[0]
+        if top.amount >= 50_000 and top.count >= 2:
+            patterns.append(
+                PatternInsight(
+                    kind="top_recipient",
+                    title=f"Хамгийн их зарцуулсан газар: {top.counterparty}",
+                    detail=f"{top.count} удаа гүйлгээ, нийт {fmt_amt(top.amount)}₮, дунджаар {fmt_amt(top.avg_amount)}₮",
+                    amount=top.amount,
+                    count=top.count,
+                )
+            )
+
+    # 2. Largest single expense
+    expense_txs = [t for t in transactions if t.type == "expense"]
+    if expense_txs:
+        largest = max(expense_txs, key=lambda t: t.amount)
+        if largest.amount >= 200_000:
+            who = largest.counterparty or largest.description[:40] or "—"
+            patterns.append(
+                PatternInsight(
+                    kind="large_single",
+                    title="Том дүнтэй гүйлгээ",
+                    detail=f"{fmt_amt(largest.amount)}₮ — {who}",
+                    amount=largest.amount,
+                    count=1,
+                )
+            )
+
+    # 3. Recurring small expenses (subscription-маягийн зүйл — давтагдсан жижиг гүйлгээ)
+    for c in expenses:
+        if c.count >= 3 and c.avg_amount < 50_000:
+            patterns.append(
+                PatternInsight(
+                    kind="recurring",
+                    title=f"Давтагдсан зарлага: {c.counterparty}",
+                    detail=f"{c.count} удаа х дунджаар {fmt_amt(c.avg_amount)}₮ = нийт {fmt_amt(c.amount)}₮",
+                    amount=c.amount,
+                    count=c.count,
+                )
+            )
+        if len(patterns) >= 6:
+            break
+
+    # 4. Channel breakdown
+    channel_totals: dict = defaultdict(lambda: {"amount": 0.0, "count": 0})
+    for t in transactions:
+        if t.type != "expense" or not t.channel:
+            continue
+        channel_totals[t.channel]["amount"] += t.amount
+        channel_totals[t.channel]["count"] += 1
+    if channel_totals:
+        sorted_channels = sorted(channel_totals.items(), key=lambda kv: kv[1]["amount"], reverse=True)
+        top_channel, top_data = sorted_channels[0]
+        if top_data["count"] >= 3:
+            patterns.append(
+                PatternInsight(
+                    kind="channel_breakdown",
+                    title=f"Гол төлбөрийн арга: {top_channel}",
+                    detail=f"{top_data['count']} гүйлгээ, нийт {fmt_amt(top_data['amount'])}₮",
+                    amount=top_data["amount"],
+                    count=top_data["count"],
+                )
+            )
+
+    return patterns
+
+
+def fmt_amt(v: float) -> str:
+    """Мөнгөн дүнг ',' separator-той форматлана. (Помощник pattern detail-д.)"""
+    return f"{int(round(v)):,}"
+
+
 def derive_balances(transactions: List[ParsedTransaction], income: float, expense: float) -> Tuple[float, float]:
     """Хэрэв гүйлгээний balance байхгүй бол last/first дэх balance-ыг тооцоолно."""
     balances = [t.balance for t in transactions if t.balance]
@@ -1094,6 +1350,11 @@ async def parse_statement(file: UploadFile = File(...)):
     # detect_bank-аар таних боломжгүй. Parser-ийн тодорхойлсон bank_hint-ийг урьтал.
     bank_name = bank_hint or detect_bank(text or "")
     txs = filter_noise(txs)
+
+    # Counterparty + channel оноох (description-аас merchant/recipient шүүх).
+    # Бүх parse_*_format-ууд description өгсөн байх ёстой.
+    for t in txs:
+        enrich(t)
 
     # Эхлээд гүйлгээний нийлбэрээр тооцно...
     income, expense, breakdown, period_start, period_end = aggregate(txs)
@@ -1157,14 +1418,20 @@ async def parse_statement(file: UploadFile = File(...)):
             c.amount = c.amount * scale
             c.percentage = (c.amount / expense) * 100
 
+    # Counterparty breakdown + pattern insights
+    counterparty_breakdown = aggregate_counterparties(txs)
+    patterns = detect_patterns(txs, counterparty_breakdown)
+
     log.info(
-        "parsed bank=%s tx=%d income=%.0f expense=%.0f opening=%.0f closing=%.0f summary=%s",
+        "parsed bank=%s tx=%d income=%.0f expense=%.0f opening=%.0f closing=%.0f counterparties=%d patterns=%d summary=%s",
         bank_name,
         len(txs),
         income,
         expense,
         opening,
         closing,
+        len(counterparty_breakdown),
+        len(patterns),
         list(summary.keys()),
     )
 
@@ -1178,4 +1445,6 @@ async def parse_statement(file: UploadFile = File(...)):
         period_end=period_end,
         transactions=txs,
         category_breakdown=breakdown,
+        counterparty_breakdown=counterparty_breakdown,
+        patterns=patterns,
     )

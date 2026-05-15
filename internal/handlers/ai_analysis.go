@@ -97,22 +97,26 @@ func (h *AIAnalysisHandler) AnalyzeStatement(c *gin.Context) {
 	catsJSON, _ := json.Marshal(parsed.CategoryBreakdown)
 	txsJSON, _ := json.Marshal(parsed.Transactions)
 	recsJSON, _ := json.Marshal(recommendations)
+	cpsJSON, _ := json.Marshal(parsed.CounterpartyBreakdown)
+	patternsJSON, _ := json.Marshal(parsed.Patterns)
 
 	record := models.AIAnalysis{
-		UserID:              userID,
-		Filename:            header.Filename,
-		BankName:            parsed.BankName,
-		OpeningBalance:      parsed.OpeningBalance,
-		ClosingBalance:      parsed.ClosingBalance,
-		TotalIncome:         parsed.TotalIncome,
-		TotalExpenses:       parsed.TotalExpenses,
-		TransactionCount:    len(parsed.Transactions),
-		PeriodStart:         parsed.PeriodStart,
-		PeriodEnd:           parsed.PeriodEnd,
-		CategoriesJSON:      string(catsJSON),
-		TransactionsJSON:    string(txsJSON),
-		RecommendationsJSON: string(recsJSON),
-		AISummary:           summary,
+		UserID:               userID,
+		Filename:             header.Filename,
+		BankName:             parsed.BankName,
+		OpeningBalance:       parsed.OpeningBalance,
+		ClosingBalance:       parsed.ClosingBalance,
+		TotalIncome:          parsed.TotalIncome,
+		TotalExpenses:        parsed.TotalExpenses,
+		TransactionCount:     len(parsed.Transactions),
+		PeriodStart:          parsed.PeriodStart,
+		PeriodEnd:            parsed.PeriodEnd,
+		CategoriesJSON:       string(catsJSON),
+		TransactionsJSON:     string(txsJSON),
+		RecommendationsJSON:  string(recsJSON),
+		CounterpartiesJSON:   string(cpsJSON),
+		PatternsJSON:         string(patternsJSON),
+		AISummary:            summary,
 	}
 	if err := h.DB.Create(&record).Error; err != nil {
 		log.Printf("ai_analysis save failed: %v", err)
@@ -146,6 +150,8 @@ func (h *AIAnalysisHandler) AnalyzeStatement(c *gin.Context) {
 		PeriodEnd:        parsed.PeriodEnd,
 		Transactions:     parsed.Transactions,
 		Categories:       parsed.CategoryBreakdown,
+		Counterparties:   parsed.CounterpartyBreakdown,
+		Patterns:         parsed.Patterns,
 		Recommendations:  recommendations,
 		AISummary:        summary,
 		CreatedAt:        record.CreatedAt,
@@ -199,9 +205,13 @@ func hydrateAnalysis(r models.AIAnalysis) models.AIAnalysisResponse {
 	var cats []models.CategoryBreakdown
 	var txs []models.ParsedTransaction
 	var recs []string
+	var cps []models.CounterpartyBreakdown
+	var patterns []models.PatternInsight
 	_ = json.Unmarshal([]byte(r.CategoriesJSON), &cats)
 	_ = json.Unmarshal([]byte(r.TransactionsJSON), &txs)
 	_ = json.Unmarshal([]byte(r.RecommendationsJSON), &recs)
+	_ = json.Unmarshal([]byte(r.CounterpartiesJSON), &cps)
+	_ = json.Unmarshal([]byte(r.PatternsJSON), &patterns)
 
 	return models.AIAnalysisResponse{
 		ID:               r.ID,
@@ -217,6 +227,8 @@ func hydrateAnalysis(r models.AIAnalysis) models.AIAnalysisResponse {
 		PeriodEnd:        r.PeriodEnd,
 		Transactions:     txs,
 		Categories:       cats,
+		Counterparties:   cps,
+		Patterns:         patterns,
 		Recommendations:  recs,
 		AISummary:        r.AISummary,
 		CreatedAt:        r.CreatedAt,
@@ -1231,6 +1243,7 @@ func buildAnalysisPrompt(p *models.ParsedStatement) string {
 	fmt.Fprintf(&b, "- Нийт орлого: %.0f₮\n", p.TotalIncome)
 	fmt.Fprintf(&b, "- Нийт зарлага: %.0f₮\n", p.TotalExpenses)
 	fmt.Fprintf(&b, "- Гүйлгээний тоо: %d\n", len(p.Transactions))
+
 	if len(p.CategoryBreakdown) > 0 {
 		b.WriteString("\nЗарлагын ангилал (top 8):\n")
 		for i, c := range p.CategoryBreakdown {
@@ -1240,6 +1253,35 @@ func buildAnalysisPrompt(p *models.ParsedStatement) string {
 			fmt.Fprintf(&b, "  %s: %.0f₮ (%.1f%%, %d гүйлгээ)\n", c.Category, c.Amount, c.Percentage, c.Count)
 		}
 	}
+
+	// Counterparty breakdown — хэн рүү/хэнээс хамгийн их гүйлгээ хийсэн
+	if len(p.CounterpartyBreakdown) > 0 {
+		b.WriteString("\nХарьцсан этгээдээр (top 8):\n")
+		count := 0
+		for _, cp := range p.CounterpartyBreakdown {
+			if count >= 8 {
+				break
+			}
+			typ := "зарлага"
+			if cp.Type == "income" {
+				typ = "орлого"
+			}
+			fmt.Fprintf(&b, "  %s (%s): %.0f₮ нийт, %d удаа х дунджаар %.0f₮\n",
+				cp.Counterparty, typ, cp.Amount, cp.Count, cp.AvgAmount)
+			count++
+		}
+	}
+
+	// Илрүүлсэн хэв шинж — AI-д ашиглах
+	if len(p.Patterns) > 0 {
+		b.WriteString("\nИлрүүлсэн хэв шинж:\n")
+		for _, pat := range p.Patterns {
+			fmt.Fprintf(&b, "  [%s] %s — %s\n", pat.Kind, pat.Title, pat.Detail)
+		}
+	}
+
+	b.WriteString("\nЭдгээр бодит өгөгдөлд тулгуурлан хувийн санхүүгийн зөвлөгөө өг. ")
+	b.WriteString("Тодорхой merchant нэр, тоо дурдсан зөвлөмж өгнө үү.")
 	return b.String()
 }
 
@@ -1270,11 +1312,21 @@ func ruleBasedRecommendations(p *models.ParsedStatement) []string {
 		rate := (net / p.TotalIncome) * 100
 		recs = append(recs, fmt.Sprintf("Хэмнэлтийн хувь %.0f%%. Орлогынхоо 20%%-аас доош хэмнэвэл удирдамжаа сайжруулна.", rate))
 	}
-	if len(p.CategoryBreakdown) > 0 {
+
+	// Pattern-уудаас илрүүлсэн нь зөвлөмжид шууд нэмэгдэнэ — counterparty / channel
+	// бодит нэрстэй, илүү ач холбогдолтой санал болгож харагдана.
+	for _, pat := range p.Patterns {
+		recs = append(recs, fmt.Sprintf("%s — %s", pat.Title, pat.Detail))
+		if len(recs) >= 5 {
+			break
+		}
+	}
+
+	if len(p.CategoryBreakdown) > 0 && len(recs) < 5 {
 		top := p.CategoryBreakdown[0]
 		recs = append(recs, fmt.Sprintf("\"%s\" ангилалд %.0f₮ зарцуулсан (зарлагын %.1f%%). Энэ ангилалд сарын төсөв тогтоох нь үр дүнтэй.", top.Category, top.Amount, top.Percentage))
 	}
-	if len(p.Transactions) > 30 {
+	if len(p.Transactions) > 30 && len(recs) < 5 {
 		recs = append(recs, "Гүйлгээ их байна. Давтагдсан жижиг зарлагуудыг (subscriptions, кофе, такси) нэгтгэн хяна.")
 	}
 	if len(recs) == 0 {
@@ -1357,6 +1409,38 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 		}
 	}
 
+	// findOrCreateCategory - parser-ийн санал болгосон ангилал нэрээр хайна.
+	// Олдохгүй бол шинэ ангилал DB-д үүсгэнэ (dynamic). Цааш ижил нэртэй
+	// гүйлгээнүүд ижил ангилалд орно.
+	findOrCreateCategory := func(name, txType string) models.Category {
+		clean := strings.ToLower(strings.TrimSpace(name))
+		if clean == "" {
+			if txType == "income" {
+				return defaultIncome
+			}
+			return defaultExpense
+		}
+		if c, ok := catByName[clean]; ok && c.Type == txType {
+			return c
+		}
+		// Шинэ ангилал үүсгэх
+		newCat := models.Category{
+			Name:  strings.TrimSpace(name),
+			Type:  txType,
+			Icon:  "pricetag-outline",
+			Color: pickCategoryColor(name),
+		}
+		if err := h.DB.Create(&newCat).Error; err != nil {
+			log.Printf("dynamic category create failed (%s): %v", name, err)
+			if txType == "income" {
+				return defaultIncome
+			}
+			return defaultExpense
+		}
+		catByName[clean] = newCat
+		return newCat
+	}
+
 	// 3. Гүйлгээ бүрийг хадгална
 	var inserted int
 	var totalIn, totalOut float64
@@ -1375,20 +1459,24 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 			date = time.Now()
 		}
 
-		// Category — нэрээр; үгүй бол default; type зөрвөл default-руу буцна
-		cat, ok := catByName[strings.ToLower(strings.TrimSpace(p.Category))]
-		if !ok || cat.Type != p.Type {
-			if p.Type == "income" {
-				cat = defaultIncome
-			} else {
-				cat = defaultExpense
-			}
-		}
+		// Category — parser-ийн санал болгосон нэрээр find-or-create.
+		// Хэрэв parser "Бусад" буцаасан бол default-руу буцна (шинэ "Бусад"
+		// олон үүсэхээс сэргийлнэ).
+		cat := findOrCreateCategory(p.Category, p.Type)
 		if cat.ID == 0 {
-			continue // category байхгүй
+			continue
 		}
 
+		// Description-д counterparty + channel мэдээллийг холино (хэрэглэгчид
+		// илүү ойлгомжтой).
 		desc := strings.TrimSpace(p.Description)
+		if p.Counterparty != "" {
+			if p.Channel != "" && p.Channel != "Fee" {
+				desc = fmt.Sprintf("%s · %s", p.Counterparty, p.Channel)
+			} else {
+				desc = p.Counterparty
+			}
+		}
 		if desc == "" {
 			desc = "—"
 		}
