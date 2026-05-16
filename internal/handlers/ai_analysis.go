@@ -1339,18 +1339,25 @@ func ruleBasedRecommendations(p *models.ParsedStatement) []string {
 
 // bankDisplayInfo - banks-ийн Монгол нэр, icon, өнгийг буцаана.
 // Account-ийн нэр нь UI дээр харагдах учраас Монгол хэлээр буцаана.
+//
+// Бренд өнгөнүүд:
+//   Хаан банк    — ногоон (Khan Bank green)
+//   Голомт банк  — нил ягаан (purple)
+//   ХХБ          — цэнхэр (light blue / cyan)
+//   Хас банк     — улбар шар (orange)
+//   Төрийн банк  — хөх (deep navy blue)
 func bankDisplayInfo(bankName string) (string, string, string) {
 	switch bankName {
 	case "Khan Bank":
 		return "Хаан банк", "wallet", "#00A859"
 	case "Golomt Bank":
-		return "Голомт банк", "wallet", "#E30613"
+		return "Голомт банк", "wallet", "#8E44AD"
 	case "TDB":
-		return "ХХБ", "wallet", "#003DA5"
+		return "ХХБ", "wallet", "#00B8D4"
 	case "Khas Bank":
 		return "Хас банк", "wallet", "#F58220"
 	case "State Bank":
-		return "Төрийн банк", "wallet", "#1D4F91"
+		return "Төрийн банк", "wallet", "#0D47A1"
 	case "", "Unknown Bank":
 		return "Импорт хийсэн данс", "wallet", "#00C853"
 	default:
