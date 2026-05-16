@@ -87,28 +87,67 @@ class ParsedStatement(BaseModel):
 # ===================== Helpers =====================
 
 
+# Шимтгэл/хүү таних keyword-ууд — банкны үйлчилгээний шимтгэлийг бусдаас
+# хамгийн түрүүн ялгана (Шимтгэл category нь POS/Transfer-ийн ангилалаас
+# илүү онцлог).
+FEE_DESC_KEYWORDS = (
+    "charges for", "гүйлгээний шимтгэл", "данс хөтөлсний", "шимтгэл",
+    "хураамж", "interest", "хүү", "fee",
+)
+
+# CATEGORY_RULES — нэгдсэн merchant нэр + үйл явдлын keyword-аар ангилал тогтоох.
+# Channel-аас илүү тодорхой ангилал гаргахын тулд ЭХЭЛЖ шалгана (POS:KFCMONGOL
+# нь "Хоол" болохоос "Картын гүйлгээ" биш).
 CATEGORY_RULES: List[Tuple[str, List[str]]] = [
-    ("Хоол", ["хоол", "ресторан", "кафе", "food", "restaurant", "kfc", "mcdonald", "pizza"]),
-    ("Такси", ["такси", "uber", "bolt", "taxi"]),
+    ("Хоол", ["хоол", "ресторан", "кафе", "food", "restaurant", "kfc", "mcdonald", "pizza", "lotteria", "dino chic", "tsainii g", "kebab", "dessert"]),
+    ("Такси", ["такси", "uber", "bolt", "taxi", "ubcab"]),
     ("Тээвэр", ["шатахуун", "petrol", "gas", "shell", "petrovis", "magicnet"]),
-    ("Дэлгүүр", ["emart", "номин", "nomin", "minii", "минии", "store", "shop", "дэлгүүр", "circle k"]),
+    ("Дэлгүүр", ["emart", "номин", "nomin", "minii", "минии", "store", "shop", "дэлгүүр", "circle k", "cu-", "gs25", "gs-25", "tesco", "tumen mal", "naran", "ikh mongo", "monos"]),
     ("Эрүүл мэнд", ["эмнэлэг", "pharmacy", "эмийн сан", "hospital", "clinic"]),
     ("Орон сууц", ["түрээс", "rent", "орон сууц", "ус сүлжээ", "халаалт"]),
     ("Интернет", ["unitel", "mobicom", "skytel", "gmobile", "интернет", "internet"]),
     ("Цалин", ["цалин", "salary", "tsalin", "wage"]),
-    ("Шилжүүлэг", ["шилжүүлэг", "transfer"]),
-    ("Зугаа цэнгэл", ["netflix", "spotify", "youtube", "tiktok", "subscription", "кино"]),
+    ("Зугаа цэнгэл", ["netflix", "spotify", "youtube", "tiktok", "subscription", "кино", "gar utas", "lotteria"]),
     ("Боловсрол", ["сургууль", "school", "tuition", "education", "boloвсрол", "course"]),
     ("Хадгаламж", ["хадгаламж", "deposit", "savings"]),
     ("Зээл", ["зээл", "loan", "credit"]),
 ]
 
 
-def classify(desc: str) -> str:
+def classify(desc: str, channel: str = "") -> str:
+    """Гүйлгээний ангиллыг тодорхойлно.
+
+    Priority:
+      1. Шимтгэл (channel="Fee" эсвэл desc-д fee keyword) — хамгийн тодорхой
+      2. Merchant нэр keyword (KFCMONGOL → Хоол, TESCO → Дэлгүүр)
+      3. Channel-based (POS/BOM → Картын гүйлгээ, qpay → Цахим төлбөр,
+         SocialPay/HappyPay/EB/Transfer → Шилжүүлэг)
+      4. Бусад
+    """
     low = (desc or "").lower()
+
+    # 1. Шимтгэл — channel="Fee" эсвэл текстэд шимтгэлийн keyword
+    if channel == "Fee" or any(k in low for k in FEE_DESC_KEYWORDS):
+        return "Шимтгэл"
+
+    # 2. Merchant-name keyword match (specific хоолны газар, дэлгүүр г.м.)
     for cat, keywords in CATEGORY_RULES:
         if any(k in low for k in keywords):
             return cat
+
+    # 3. Channel-based generic fallback — merchant нэр танигдаагүй ч channel
+    # мэдэгдэж байвал бүлэглэнэ
+    if channel == "POS" or channel == "BOM":
+        return "Картын гүйлгээ"
+    if channel == "qpay":
+        return "Цахим төлбөр"
+    if channel in ("SocialPay", "HappyPay", "EB", "Transfer"):
+        return "Шилжүүлэг"
+
+    # 4. Description-аас "шилжүүлэг"/"transfer" keyword илрэх (channel-гүй tx-д)
+    if "шилжүүлэг" in low or "transfer" in low:
+        return "Шилжүүлэг"
+
     return "Бусад"
 
 
@@ -220,15 +259,18 @@ def _clean_name(name: str) -> str:
 
 
 def enrich(tx: ParsedTransaction) -> ParsedTransaction:
-    """ParsedTransaction-ийг counterparty + channel-аар баяжуулна.
+    """ParsedTransaction-ийг counterparty + channel + category-аар баяжуулна.
 
-    Бүх parse_*_format функцид буцаахаасаа өмнө энэ функцийг дуудаж нэг газар
-    counterparty оноох логиктой байлгана.
+    Parser-аас гарсан tx нь description-аар л classified байсан. Channel мэдсэний
+    дараа re-classify хийж илүү тодорхой ангилал (Шимтгэл / Картын гүйлгээ /
+    Цахим төлбөр / Шилжүүлэг) гаргана.
     """
     if not tx.counterparty:
         cp, channel = extract_counterparty(tx.description)
         tx.counterparty = cp
         tx.channel = channel
+    # Channel-based re-classify — desc + channel хосолно
+    tx.category = classify(tx.description, tx.channel)
     return tx
 
 
