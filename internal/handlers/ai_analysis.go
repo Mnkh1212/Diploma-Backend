@@ -1441,8 +1441,21 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 		return newCat
 	}
 
-	// 3. Гүйлгээ бүрийг хадгална
-	var inserted int
+	// 3. Давхар оруулахаас сэргийлэх. Энэ дансанд аль хэдийн орсон хамгийн
+	// сүүлчийн гүйлгээний огнооноос хойшхи гүйлгээг л оруулна. Ингэснээр
+	// хэрэглэгч ижил хуулга дахин оруулсан эсвэл шинэ хуулга нь хуучин
+	// хугацаатай давхцалтай байсан ч ижил гүйлгээ хоёр удаа орохгүй.
+	var latestExisting time.Time
+	h.DB.Model(&models.Transaction{}).
+		Where("user_id = ? AND account_id = ?", userID, account.ID).
+		Select("COALESCE(MAX(date), '0001-01-01'::timestamp)").
+		Scan(&latestExisting)
+	if !latestExisting.IsZero() {
+		log.Printf("import: skipping txs on/before %s for account %d", latestExisting.Format("2006-01-02"), account.ID)
+	}
+
+	// 4. Гүйлгээ бүрийг хадгална
+	var inserted, skippedDup int
 	var totalIn, totalOut float64
 	const maxSaneAmount = 1_000_000_000 // 1 тэрбум (parser алдаатай дүн)
 	for _, p := range parsed.Transactions {
@@ -1459,9 +1472,16 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 			date = time.Now()
 		}
 
+		// Давхцаагүй хугацааны шинэ гүйлгээг л оруулна (хамгийн сүүлчийн
+		// existing гүйлгээний огнооноос ХОЙШ). Тэгш огнотойг оруулахгүй —
+		// банкны хуулга нь period overlap-той ирдэг учир (Стейтмент 1: 1-31,
+		// Стейтмент 2: 25-...).
+		if !latestExisting.IsZero() && !date.After(latestExisting) {
+			skippedDup++
+			continue
+		}
+
 		// Category — parser-ийн санал болгосон нэрээр find-or-create.
-		// Хэрэв parser "Бусад" буцаасан бол default-руу буцна (шинэ "Бусад"
-		// олон үүсэхээс сэргийлнэ).
 		cat := findOrCreateCategory(p.Category, p.Type)
 		if cat.ID == 0 {
 			continue
@@ -1502,12 +1522,25 @@ func (h *AIAnalysisHandler) importParsedAsTransactions(userID uint, parsed *mode
 		}
 	}
 
-	// 4. Account balance update — incremental
-	if delta := totalIn - totalOut; delta != 0 {
+	// 5. Account balance update.
+	//
+	// Шинэ хуулганд closing_balance байгаа БА энэ нь хамгийн сүүлчийн хугацааг
+	// хамарч буй (өмнөх period_end-ээс хойш) бол түүгээр шууд тогтоно — бодит
+	// дансны үлдэгдэлтэй синхрончлогдоно. Үгүй бол incremental (oруулсан
+	// гүйлгээний нийт).
+	parsedEnd, _ := time.Parse("2006-01-02", parsed.PeriodEnd)
+	if parsed.ClosingBalance > 0 && !parsedEnd.IsZero() && parsedEnd.After(latestExisting) {
+		h.DB.Model(&models.Account{}).
+			Where("id = ?", account.ID).
+			Update("balance", parsed.ClosingBalance)
+	} else if delta := totalIn - totalOut; delta != 0 {
 		h.DB.Model(&models.Account{}).
 			Where("id = ?", account.ID).
 			Update("balance", gorm.Expr("balance + ?", delta))
 	}
+
+	log.Printf("import: inserted=%d, skipped_duplicate=%d, account=%s closing=%.0f",
+		inserted, skippedDup, account.Name, parsed.ClosingBalance)
 
 	return inserted, nil
 }
