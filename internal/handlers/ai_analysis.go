@@ -1012,7 +1012,10 @@ func detectBankName(raw string) string {
 		return "Golomt Bank"
 	case strings.Contains(low, "tdb bank"),
 		strings.Contains(low, "trade and development bank"),
-		strings.Contains(low, "худалдаа хөгжлийн банк"):
+		strings.Contains(low, "trade & development"),
+		strings.Contains(low, "худалдаа хөгжлийн банк"),
+		strings.Contains(low, "депозит дансны хуулга"),
+		strings.Contains(low, "etdbm.mn"):
 		return "TDB"
 	case strings.Contains(low, "khas bank"),
 		strings.Contains(low, "хас банк"),

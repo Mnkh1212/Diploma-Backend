@@ -280,7 +280,10 @@ BANK_KEYWORDS = [
     ("Golomt Bank", ["golomt bank", "голомт банк", "голомт"]),
     # TDB — "tdb bank" эсвэл "trade and development" гэж тодорхой ярьсан үед л таних
     # (TDBM13361 гэх мэт transfer ID-аас зайлсхийнэ)
-    ("TDB", ["tdb bank", "trade and development bank", "худалдаа хөгжлийн банк"]),
+    ("TDB", [
+        "tdb bank", "trade and development bank", "trade & development",
+        "худалдаа хөгжлийн банк", "депозит дансны хуулга", "etdbm.mn",
+    ]),
     ("Khas Bank", ["khas bank", "хас банк", "xacbank"]),
     ("State Bank", ["state bank", "төрийн банк"]),
     ("M Bank", ["m bank", "м банк"]),
@@ -392,6 +395,20 @@ def parse_pdf(content: bytes) -> Tuple[str, List[ParsedTransaction], Optional[st
         g_txs = parse_golomt_format(content, text)
         if g_txs:
             return text, g_txs, "Golomt Bank"
+
+    # TDB (ХХБ) — "Депозит дансны хуулга" title бол гарцаагүй TDB. Шинэ
+    # (etdbm.mn) болон хуучин загвар хоёуланг нь dedicated parser-аар уншина.
+    is_tdb = (
+        "депозит дансны хуулга" in low
+        or "etdbm.mn" in low
+        or "tdb bank" in low
+        or "trade and development" in low
+        or "trade & development" in low
+    )
+    if is_tdb:
+        tdb_txs = parse_tdb_format(text)
+        if tdb_txs:
+            return text, tdb_txs, "TDB"
 
     # Mongolian bank format-ыг шалгана. Хэрэв "ОРЛОГО" / "ЗАРЛАГА" cyrillic
     # keyword-ууд ихтэй бол Mongolian parser ашиглана — ингэснээр илүү нарийн.
@@ -790,6 +807,223 @@ def _parse_golomt_text(text: str) -> List[ParsedTransaction]:
             new_desc = (pending.description + " " + line).strip()[:200]
             pending.description = new_desc
             pending.category = classify(new_desc)
+
+    return txs
+
+
+# ===================== TDB (Худалдаа Хөгжлийн Банк) parser =====================
+#
+# TDB-ийн "Депозит дансны хуулга" PDF нь хоёр төрөл байна:
+#
+# 1) Хуучин загвар (deposit-account-statement-customer-*.pdf):
+#    Багана: Огноо | Теллер | Орлого | Зарлага | Ханш | Үлдэгдэл | Гүйлгээний утга
+#                                                             /Харьцсан данс /IBAN
+#    Огноо нь 3 мөр (огноо / цаг / AM|PM). Орлого ЭСВЭЛ Зарлага зөвхөн нэг нь
+#    дүнтэй, нөгөө нь хоосон. Ханш = "1" (decimal-гүй). Үлдэгдэлээр income/expense ялгана.
+#
+# 2) Шинэ загвар (ST_*.PDF — etdbm.mn-ээс):
+#    Багана: Огноо | Теллер | Орлого | Зарлага | Ханш | Харьцсан данс | Үлдэгдэл | Гүйлгээний утга
+#    Огноо+цаг нэг мөрөнд (2026.1.1 3:22:29AM). Орлого/Зарлага хоёулаа гарна
+#    (хоосон бол 0.00). Ханш = 1.00. Үлдэгдэл бол 4 дэх decimal дүн.
+#
+# Хоёр форматаас хамаарахгүй, шинэ гүйлгээний мөрийг date prefix-ээр илрүүлж,
+# үлдсэн text-ийн decimal дүнгээр зөв ангилна. Description нь олон мөр сунах
+# тул pending tx-д залгана.
+
+TDB_NEWER_LINE_RE = re.compile(
+    r"^(\d{4}\.\d{1,2}\.\d{1,2})\s+(\d{1,2}:\d{2}:\d{2})(AM|PM)\s+(\d{3}\s*-\s*\d+)\s+(.+)$"
+)
+TDB_OLDER_LINE_RE = re.compile(
+    r"^(\d{4}/\d{1,2}/\d{1,2})\s+(\d{3}\s*-\s*\d+)\s+(.+)$"
+)
+TDB_AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})*\.\d{2}")
+TDB_OPENING_BAL_RE = re.compile(
+    r"эхний\s*үлдэгдэл[^\d-]*(-?\d{1,3}(?:,\d{3})*\.\d{2})", re.IGNORECASE
+)
+TDB_TIME_TOKEN_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\b")
+TDB_AMPM_LINE_RE = re.compile(r"^\s*(AM|PM)\s*\d?\s*$")
+TDB_AMPM_TOKEN_RE = re.compile(r"(?<![A-Za-zА-Яа-я])(?:AM|PM)(?![A-Za-zА-Яа-я])")
+
+
+def parse_tdb_format(text: str) -> List[ParsedTransaction]:
+    """ХХБ-ийн (TDB) Депозит дансны хуулга-д зориулсан parser.
+
+    Хуучин + шинэ хоёр загварыг хоёуланг нь дэмжинэ. Орлого/Зарлага шууд
+    байгаа бол түүгээр нь, эс бөгөөс эхний үлдэгдэл vs мөрийн үлдэгдлийн
+    зөрүүгээр гүйлгээний төрлийг шийднэ.
+    """
+    txs: List[ParsedTransaction] = []
+
+    # Эхний үлдэгдэл — хуучин формат дээр income/expense ялгахад хэрэгтэй
+    prev_balance: Optional[float] = None
+    m = TDB_OPENING_BAL_RE.search(text)
+    if m:
+        prev_balance = normalize_amount(m.group(1))
+
+    pending: Optional[ParsedTransaction] = None
+
+    def _strip_counterparty(raw: str) -> str:
+        # IBAN, 6+ оронт данс, ганц "1" (хуучин ханш), "TDB PAY ГҮЙЛГЭЭНИЙ ТҮР
+        # ДАНС" зэрэг noise-уудыг арилгана
+        s = re.sub(r"\bMN\d{18,}\b", "", raw)
+        s = re.sub(r"\b\d{6,}\b", "", s)
+        s = re.sub(r"\b541334X+\d+\b", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\b1\b", "", s)
+        s = re.sub(r"\s+", " ", s).strip(" ,-")
+        return s
+
+    def _split_at_last(rest: str, amounts: List[str]) -> Tuple[str, str]:
+        """rest текстийг сүүлийн (үлдэгдэл) amount-аар хэсэглэнэ.
+
+        Үлдсэн хоёр хэсгээс эхнийх (counterparty) ба сүүлийнх
+        (description) -ийг буцаана. counterparty хэсэгт байгаа бусад
+        amount-уудыг хасна.
+        """
+        if not amounts:
+            return "", rest
+        # сүүлийн match-ийг л байрлуулна
+        last_amt = amounts[-1]
+        idx = rest.rfind(last_amt)
+        before = rest[:idx]
+        after = rest[idx + len(last_amt):].strip()
+        for a in amounts[:-1]:
+            before = before.replace(a, "", 1)
+        counterparty = _strip_counterparty(before)
+        return counterparty, after
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # 1) Шинэ загвар (cаг line-нд багтсан)
+        nm = TDB_NEWER_LINE_RE.match(line)
+        if nm:
+            date_raw, _time, _ampm, _teller, rest = nm.groups()
+            date = normalize_date(date_raw.replace(".", "-"))
+            amounts = TDB_AMOUNT_RE.findall(rest)
+            if len(amounts) < 4:
+                pending = None
+                continue
+            income = normalize_amount(amounts[0]) or 0.0
+            expense = normalize_amount(amounts[1]) or 0.0
+            # amounts[2] = Ханш (1.00) — алгасна
+            # amounts[3..] = Үлдэгдэл (хэрэв counterparty-д decimal байвал
+            # сүүлийнхийг үлдэгдэл гэж үзнэ)
+            balance = normalize_amount(amounts[-1]) or 0.0
+
+            if income >= MIN_TX_AMOUNT and expense < MIN_TX_AMOUNT:
+                tx_amount, tx_type = income, "income"
+            elif expense >= MIN_TX_AMOUNT:
+                tx_amount, tx_type = expense, "expense"
+            else:
+                # 100₮-өөс бага noise (data error) — алгасна
+                pending = None
+                prev_balance = balance
+                continue
+
+            counterparty, desc_part = _split_at_last(rest, amounts)
+            full_desc = desc_part or "—"
+            if counterparty:
+                full_desc = f"{full_desc} ({counterparty})" if desc_part else counterparty
+
+            tx = ParsedTransaction(
+                date=date,
+                description=full_desc[:200],
+                amount=tx_amount,
+                type=tx_type,
+                category=classify(full_desc),
+                balance=balance,
+            )
+            txs.append(tx)
+            pending = tx
+            prev_balance = balance
+            continue
+
+        # 2) Хуучин загвар (огноо + теллер, цаг нь дараагийн мөрөнд)
+        om = TDB_OLDER_LINE_RE.match(line)
+        if om:
+            date_raw, _teller, rest = om.groups()
+            date = normalize_date(date_raw)
+            amounts = TDB_AMOUNT_RE.findall(rest)
+            if not amounts:
+                pending = None
+                continue
+
+            move = normalize_amount(amounts[0]) or 0.0
+            # Эцсийн "ДАНС ХӨТӨЛСНИЙ ШИМТГЭЛ" нь зөвхөн 1 дүнтэй (closing→0) гарах
+            # тохиолдол ховор биш — single-amount-ийг expense + balance=0 гэж үзнэ.
+            if len(amounts) == 1:
+                balance = 0.0
+            else:
+                balance = normalize_amount(amounts[-1]) or 0.0
+            if move < MIN_TX_AMOUNT:
+                pending = None
+                prev_balance = balance
+                continue
+
+            # Income/Expense ялгахдаа үлдэгдлийн зөрүү
+            tx_type: str
+            if len(amounts) == 1:
+                # Closing fee — заавал expense
+                tx_type = "expense"
+            elif prev_balance is None:
+                tx_type = "expense"
+            else:
+                diff = balance - prev_balance
+                if abs(diff) < 1:
+                    pending = None
+                    prev_balance = balance
+                    continue
+                tx_type = "income" if diff > 0 else "expense"
+
+            counterparty, desc_part = _split_at_last(rest, amounts)
+            # Хуучин загвар: Ханш=1 нь дараагийн token. Description эхэнд гарвал арилгана.
+            desc_part = re.sub(r"^1\s+", "", desc_part).strip()
+            full_desc = desc_part or "—"
+            if counterparty:
+                full_desc = f"{full_desc} ({counterparty})" if desc_part else counterparty
+
+            tx = ParsedTransaction(
+                date=date,
+                description=full_desc[:200],
+                amount=move,
+                type=tx_type,
+                category=classify(full_desc),
+                balance=balance,
+            )
+            txs.append(tx)
+            pending = tx
+            prev_balance = balance
+            continue
+
+        # 3) Continuation мөр — pending tx-ийн description-д залгана.
+        if pending:
+            # Цаг (03:22:29) ба AM/PM standalone мөрүүдийг хасна
+            if TDB_AMPM_LINE_RE.match(line):
+                continue
+            upper = line.upper()
+            # Footer summary, header repeats — description-д залгахгүй
+            if (
+                "НИЙТ:" in upper
+                or "ХУУДАС" in upper
+                or "БАТАЛГААЖУУЛАХ" in upper
+                or "ОГНОО ТЕЛЛЕР" in upper
+            ):
+                pending = None
+                continue
+            cleaned = TDB_TIME_TOKEN_RE.sub("", line)
+            cleaned = TDB_AMPM_TOKEN_RE.sub("", cleaned).strip()
+            # Standalone "1" (Ханш value) — арилгана
+            cleaned = re.sub(r"^\s*1\s*$", "", cleaned).strip()
+            if not cleaned:
+                continue
+            if _looks_like_data_row(cleaned):
+                # Тоо-р эхэлж байгаа continuation — Ханш үлдэгдэл магадлалтай. Алгасна.
+                continue
+            new_desc = (pending.description + " " + cleaned).strip()[:200]
+            pending.description = re.sub(r"\s+", " ", new_desc)
+            pending.category = classify(pending.description)
 
     return txs
 
