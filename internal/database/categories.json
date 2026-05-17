@@ -15,6 +15,7 @@
   { "name": "Картын гүйлгээ", "icon": "card-outline", "color": "#5F27CD", "type": "expense" },
   { "name": "Цахим төлбөр", "icon": "phone-portrait-outline", "color": "#00CEC9", "type": "expense" },
   { "name": "Шилжүүлэг", "icon": "swap-horizontal-outline", "color": "#74B9FF", "type": "expense" },
+  { "name": "Бусад", "icon": "pricetag-outline", "color": "#A29BFE", "type": "expense" },
   { "name": "Цалин", "icon": "cash", "color": "#00B894", "type": "income" },
   { "name": "Фрийланс", "icon": "laptop", "color": "#6C5CE7", "type": "income" },
   { "name": "Хөрөнгө оруулалт", "icon": "trending-up", "color": "#FDCB6E", "type": "income" },
